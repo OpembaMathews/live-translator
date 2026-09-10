@@ -2026,15 +2026,13 @@ class SettingsWindow:
         cy = self.radio(ix, cy, "Online (Google)", app.stt_kind == "google",
                         lambda: app.set_stt("google"))
 
-        by = y + h - self.s(50)
-        hot = self.hover == ("quit", 0)
-        draw_rounded_rect(self.canvas, ix, by, ix + iw, by + self.s(34),
-                          self.s(9), CONTROL_HOT if hot else CONTROL_BG)
-        self.canvas.create_text(ix + iw / 2, by + self.s(17),
-                                text="Quit application",
-                                font=self.font(9.5, "bold"), fill="#E88C8C")
-        self.hits.append((ix, by, ix + iw, by + self.s(34), app.close,
-                          ("quit", 0)))
+        # No Quit button here - it sat right where you reach to close the
+        # window and took the whole app down. Close from the panel's X, or
+        # right-click the widget.
+        self.canvas.create_text(
+            ix, y + h - self.s(16), anchor="w",
+            text="Close: Esc  ·  Quit the app: right-click the widget",
+            font=self.font(7.5), fill=NOTICE_COLOR)
 
     # -- dropdown overlay --------------------------------------------------
     def _toggle_dropdown(self, rect, options, _cb):
