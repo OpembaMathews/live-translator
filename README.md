@@ -16,6 +16,24 @@ Built for two situations:
 English, Traditional Chinese and Kiswahili, in any direction. English is the
 pivot, so Chinese to Kiswahili works without a dedicated model.
 
+## Optional: your own AI key
+
+If you have a Claude or Gemini subscription, add the key and translation runs
+through that instead of the local models - noticeably better, especially for
+Kiswahili. Nothing extra to install or download.
+
+Add it during setup, or any time from the app menu (**Translation → Use my AI
+key**). Turn it off the same way; the local models are always there as a
+fallback and take over automatically if a cloud call fails.
+
+Gemini can also handle speech-to-text, so a Gemini user can skip the local
+speech model entirely. Claude is text only, so with Claude the speech step
+still runs locally or through Google.
+
+The key is encrypted with Windows DPAPI in `settings.json` beside the app - it
+is never stored in plain text and never leaves the machine except in the API
+calls you are paying for.
+
 ## How it works
 
 ```
@@ -45,6 +63,9 @@ pythonw translation.py --device "system audio (" --input auto --target en
 * `--input auto|en|zt|sw` sets the spoken language
 * `--target auto|en|zt|sw` sets what gets displayed
 * `--setup` downloads the speech model and verifies translation, then exits
+
+The AI key lives in `settings.json` (encrypted); set it through the app rather
+than editing the file.
 
 ## Using it
 

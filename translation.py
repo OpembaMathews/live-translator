@@ -2,14 +2,19 @@ import math
 import os
 import pathlib
 import sys
+import json as _json
 import queue
 import re
+import urllib.error
+import urllib.request
 import threading
 import time
 import tkinter as tk
 from concurrent.futures import ThreadPoolExecutor
 
 import speech_recognition as sr
+
+import appconfig
 
 try:
     import audioop  # removed from the stdlib in Python 3.13
@@ -386,6 +391,69 @@ class GoogleSTT:
         raise sr.UnknownValueError()
 
 
+class GeminiSTT:
+    """Speech to text through Gemini, for a user who wants to run fully on the
+    cloud and skip the local Whisper download entirely.
+
+    Gemini takes audio inline. We ask it for a language tag on the first line
+    and the transcript after, so auto-detect still works. Claude has no audio
+    input, which is why this is Gemini only.
+    """
+
+    name = "Gemini speech"
+
+    def __init__(self, api_key):
+        self.api_key = api_key
+
+    def transcribe(self, audio, lang=None):
+        import base64
+
+        wav = audio.get_wav_data(convert_rate=16000, convert_width=2)
+        if lang:
+            hint = f"The audio is in {LANGUAGES[lang]['name']}."
+            want = "Reply with only the transcript."
+            tag_line = ""
+        else:
+            names = ", ".join(v["name"] for v in LANGUAGES.values())
+            hint = f"The audio is in one of: {names}."
+            codes = "/".join(LANGUAGES)
+            want = (f"First line: the language code ({codes}). "
+                    f"Second line onward: the transcript.")
+            tag_line = "tag"
+
+        url = f"{GEMINI_URL}/{GEMINI_MODEL}:generateContent"
+        data = _http_json(url, {
+            "contents": [{"parts": [
+                {"text": f"Transcribe this speech. {hint} {want}"},
+                {"inline_data": {"mime_type": "audio/wav",
+                                 "data": base64.b64encode(wav).decode("ascii")}},
+            ]}],
+            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 400},
+        }, {
+            "content-type": "application/json",
+            "x-goog-api-key": self.api_key,
+        })
+        cands = data.get("candidates", [])
+        if not cands:
+            raise sr.UnknownValueError()
+        out = "".join(
+            part.get("text", "")
+            for part in cands[0].get("content", {}).get("parts", [])
+        ).strip()
+        if not out:
+            raise sr.UnknownValueError()
+
+        if lang:
+            return lang, out
+        first, _, rest = out.partition("\n")
+        code = first.strip().lower()[:2]
+        detected = code if code in LANGUAGES else PIVOT_LANG
+        return detected, (rest.strip() or out)
+
+    def warm_up(self):
+        pass
+
+
 class WhisperSTT:
     """faster-whisper, running on the CPU. Detects the language itself, so a
     single pass covers auto mode - but that detection costs about 0.3s, which
@@ -671,6 +739,111 @@ class DeepLEngine(Translator):
     def translate(self, text, source, target):
         # DeepL wants uppercase target codes, and some are region-qualified
         return self._client.translate_text(text, target_lang=target.upper()).text
+
+
+# ---------------------------------------------------------------------------
+# Optional cloud translation - only used when a user has added an API key
+# ---------------------------------------------------------------------------
+CLAUDE_MODEL = "claude-haiku-4-5-20251001"   # fast and cheap, ample for translation
+CLAUDE_URL = "https://api.anthropic.com/v1/messages"
+GEMINI_MODEL = "gemini-flash-latest"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+LLM_TIMEOUT = 20
+
+
+def _http_json(url, payload, headers):
+    body = _json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
+        return _json.loads(resp.read().decode("utf-8"))
+
+
+class LLMEngine(Translator):
+    """Translation through a large language model the user pays for directly.
+
+    No package to install and no model to download - the whole appeal for
+    someone who already has a Claude or Gemini subscription. One HTTP call per
+    phrase. Quality is well above the offline models, especially for languages
+    like Kiswahili where the small local models struggle.
+    """
+
+    name = "cloud"
+
+    def __init__(self, api_key):
+        if not api_key:
+            raise RuntimeError("no API key configured")
+        self.api_key = api_key
+
+    @staticmethod
+    def _prompt(text, source, target):
+        s = LANGUAGES.get(source, {}).get("name", source)
+        t = LANGUAGES.get(target, {}).get("name", target)
+        return (
+            f"Translate this {s} text into {t}. It is a live caption, so keep "
+            f"it natural and concise. Reply with only the translation, no "
+            f"notes or quotation marks.\n\n{text}"
+        )
+
+    def translate(self, text, source, target):
+        out = self._call(self._prompt(text, source, target)).strip()
+        # Models sometimes wrap the answer even when told not to
+        if len(out) > 1 and out[0] in "\"'“「" and out[-1] in "\"'”」":
+            out = out[1:-1].strip()
+        return out or text
+
+    def _call(self, prompt):
+        raise NotImplementedError
+
+    def warm_up(self):
+        # One tiny call confirms the key works before the first real phrase
+        self._call("Reply with the single word: ok")
+
+
+class ClaudeEngine(LLMEngine):
+    name = "Claude"
+
+    def _call(self, prompt):
+        data = _http_json(CLAUDE_URL, {
+            "model": CLAUDE_MODEL,
+            "max_tokens": 400,
+            "messages": [{"role": "user", "content": prompt}],
+        }, {
+            "content-type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        })
+        return "".join(
+            block.get("text", "") for block in data.get("content", [])
+        )
+
+
+class GeminiEngine(LLMEngine):
+    name = "Gemini"
+
+    def _call(self, prompt):
+        url = f"{GEMINI_URL}/{GEMINI_MODEL}:generateContent"
+        data = _http_json(url, {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 400, "temperature": 0.3},
+        }, {
+            "content-type": "application/json",
+            "x-goog-api-key": self.api_key,
+        })
+        cands = data.get("candidates", [])
+        if not cands:
+            raise RuntimeError(data.get("promptFeedback", "no response"))
+        return "".join(
+            part.get("text", "")
+            for part in cands[0].get("content", {}).get("parts", [])
+        )
+
+
+def build_cloud_engine(provider, api_key):
+    if provider == "claude":
+        return ClaudeEngine(api_key)
+    if provider == "gemini":
+        return GeminiEngine(api_key)
+    raise ValueError(f"unknown cloud provider {provider!r}")
 
 
 def build_engine(name, pairs):
@@ -1019,6 +1192,108 @@ def draw_rounded_rect(canvas, x1, y1, x2, y2, radius, fill):
     canvas.create_rectangle(x1, y1 + r, x2, y2 - r, fill=fill, outline=fill)
 
 
+class AISettingsDialog:
+    """A small form for the optional cloud-translation key.
+
+    This is the one place a real text field is worth a window of its own -
+    typing an API key onto a canvas would be miserable. Dark styling to match.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.top = tk.Toplevel(app.root)
+        self.top.title("AI translation")
+        self.top.configure(bg=PANEL_BG)
+        self.top.resizable(False, False)
+        self.top.transient(app.root)
+        self.top.attributes("-topmost", True)
+
+        pad = {"padx": 18, "bg": PANEL_BG, "fg": TEXT_COLOR}
+        tk.Label(self.top, text="Optional: translate with your own AI key",
+                 font=(app.latin_font, 12, "bold"), **pad).pack(anchor="w", pady=(16, 2))
+        tk.Label(self.top, wraplength=380, justify="left", fg=NOTICE_COLOR,
+                 bg=PANEL_BG, padx=18, font=(app.latin_font, 9),
+                 text=("Nothing to install. A Claude or Gemini key gives much "
+                       "better translation, especially for Kiswahili. Leave it "
+                       "off to keep everything local.")
+                 ).pack(anchor="w", pady=(0, 12))
+
+        self.provider = tk.StringVar(value=app.ai_provider)
+        row = tk.Frame(self.top, bg=PANEL_BG)
+        row.pack(anchor="w", padx=18)
+        for value, text in (("off", "Off"), ("claude", "Claude"), ("gemini", "Gemini")):
+            tk.Radiobutton(
+                row, text=text, value=value, variable=self.provider,
+                command=self._sync, bg=PANEL_BG, fg=TEXT_COLOR,
+                selectcolor=CONTROL_BG, activebackground=PANEL_BG,
+                activeforeground=ACCENT_HOT, font=(app.latin_font, 10),
+            ).pack(side="left", padx=(0, 14))
+
+        self.key_entry = tk.Entry(
+            self.top, show="•", width=44, bg=CONTROL_BG, fg=TEXT_COLOR,
+            disabledbackground=PANEL_BG, disabledforeground=NOTICE_COLOR,
+            insertbackground=TEXT_COLOR, relief="flat", font=(app.latin_font, 10),
+        )
+        self.key_entry.pack(padx=18, pady=(12, 2), ipady=5)
+        if app.ai_key:
+            self.key_entry.insert(0, app.ai_key)
+        self.hint = tk.Label(self.top, bg=PANEL_BG, fg=NOTICE_COLOR,
+                             font=(app.latin_font, 9), padx=18, anchor="w")
+        self.hint.pack(anchor="w")
+
+        self.speech = tk.BooleanVar(value=app.ai_covers_speech)
+        self.speech_cb = tk.Checkbutton(
+            self.top, text="Also use Gemini for speech (skip the local model)",
+            variable=self.speech, bg=PANEL_BG, fg=TEXT_COLOR,
+            selectcolor=CONTROL_BG, activebackground=PANEL_BG,
+            activeforeground=ACCENT_HOT, font=(app.latin_font, 9),
+        )
+        self.speech_cb.pack(anchor="w", padx=14, pady=(8, 0))
+
+        self.status = tk.Label(self.top, bg=PANEL_BG, fg=ACCENT_HOT,
+                               font=(app.latin_font, 9), padx=18, anchor="w")
+        self.status.pack(anchor="w", pady=(6, 0))
+
+        btns = tk.Frame(self.top, bg=PANEL_BG)
+        btns.pack(anchor="e", padx=18, pady=16)
+        tk.Button(btns, text="Cancel", command=self.top.destroy,
+                  relief="flat", bg=CONTROL_BG, fg=TEXT_COLOR,
+                  activebackground=CONTROL_HOT, font=(app.latin_font, 10),
+                  padx=14, pady=4).pack(side="right", padx=(8, 0))
+        tk.Button(btns, text="Save", command=self._save,
+                  relief="flat", bg=WAVE_PEAK, fg=PANEL_BG,
+                  activebackground=ACCENT_HOT, font=(app.latin_font, 10, "bold"),
+                  padx=16, pady=4).pack(side="right")
+
+        self._sync()
+        self.top.update_idletasks()
+        apply_dwm_rounding(self.top)
+        self.top.grab_set()
+        self.key_entry.focus_set()
+
+    def _sync(self):
+        prov = self.provider.get()
+        on = prov != "off"
+        self.key_entry.configure(state="normal" if on else "disabled")
+        self.speech_cb.configure(state="normal" if prov == "gemini" else "disabled")
+        self.hint.configure(text={
+            "claude": "Get a key at console.anthropic.com  (starts with sk-ant-)",
+            "gemini": "Get a key at aistudio.google.com/apikey",
+            "off": "Translation stays fully local.",
+        }[prov])
+
+    def _save(self):
+        prov = self.provider.get()
+        key = self.key_entry.get().strip() if prov != "off" else ""
+        covers = self.speech.get() and prov == "gemini"
+        if prov != "off" and not key:
+            self.status.configure(text="Enter a key, or choose Off.")
+            return
+        self.status.configure(text="Saving…")
+        self.app.apply_ai_settings(prov, key, covers)
+        self.top.destroy()
+
+
 class SettingsPanel:
     """Settings popover drawn on a canvas in the app's own style.
 
@@ -1177,6 +1452,16 @@ class SettingsPanel:
             ))
         misc.append(("header", "Opacity", None, False))
         misc.append(("slider", "opacity", None, False))
+
+        misc.append(("header", "Translation", None, False))
+        if app.cloud_active():
+            state = app.ai_engine.name if app.ai_engine else app.ai_provider.title()
+            misc.append(("item", f"AI: {state}",
+                         (lambda: app.open_ai_dialog()), True))
+        else:
+            misc.append(("item", "Use my AI key…",
+                         (lambda: app.open_ai_dialog()), False))
+
         misc.append(("header", "App", None, False))
         misc.append(("item", "Quit", app.close, False))
         return [audio, listen, misc]
@@ -1382,6 +1667,16 @@ class FloatingTranslator:
         self.stt_kind = STT_ENGINE
         self.whisper_choice = DEFAULT_WHISPER
         self._stt_cache = {}
+
+        # Optional cloud translation. Loaded from settings.json - a user with a
+        # Claude or Gemini key adds it once and it takes over from the local
+        # models. Everything still works with this off.
+        cfg = appconfig.load()
+        self.ai_provider = cfg["ai_provider"]
+        self.ai_key = cfg["ai_key"]
+        self.ai_covers_speech = cfg["ai_covers_speech"]
+        self.ai_engine = None          # built lazily, replaced on config change
+        self.ai_error = None
 
         # Input meter. _level_raw is written by the audio thread and read by
         # the animation tick; a plain float assignment is atomic in CPython,
@@ -1986,6 +2281,59 @@ class FloatingTranslator:
         """Hand text back to the UI thread, ignoring a closed window."""
         self.on_ui(lambda: self.update_text(text))
 
+    def cloud_active(self):
+        return self.ai_provider != "off" and bool(self.ai_key)
+
+    def get_ai_engine(self):
+        """Build the cloud engine on demand; cache until the config changes."""
+        if not self.cloud_active():
+            return None
+        if self.ai_engine is None:
+            try:
+                self.ai_engine = build_cloud_engine(self.ai_provider, self.ai_key)
+                self.ai_engine.warm_up()
+                self.ai_error = None
+                log(f"cloud translation ready: {self.ai_engine.name}")
+            except Exception as e:
+                self.ai_error = str(e)
+                log(f"cloud translation unavailable: {type(e).__name__}: {e}")
+                return None
+        return self.ai_engine
+
+    def current_translator(self):
+        """Cloud if the user enabled it and it works, otherwise the local one."""
+        return self.get_ai_engine() or self.engine
+
+    def apply_ai_settings(self, provider, key, covers_speech):
+        """Called from the settings dialog. Persists and takes effect at once."""
+        appconfig.save(provider=provider, key=key, covers_speech=covers_speech)
+        self.ai_provider = provider
+        self.ai_key = key
+        self.ai_covers_speech = covers_speech
+        self.ai_engine = None          # force a rebuild with the new settings
+        self.ai_error = None
+        self.device_gen += 1           # reopen the speech path if it changed
+        if provider == "off":
+            self.show_status("AI translation off - using local models")
+        else:
+            self.show_status(f"Checking {provider.title()} key...")
+            threading.Thread(target=self._verify_ai, daemon=True).start()
+
+    def open_ai_dialog(self):
+        if self.panel is not None:
+            self.panel.close()
+        try:
+            AISettingsDialog(self)
+        except tk.TclError:
+            pass
+
+    def _verify_ai(self):
+        engine = self.get_ai_engine()
+        if engine is not None:
+            self.show_status(f"AI translation on: {engine.name}")
+        else:
+            self.show_status(f"AI key rejected: {self.ai_error or 'check the key'}")
+
     def start_listening(self, engine_name):
         pairs = translation_pairs()
         log(f"--- start: engine={engine_name} langs={sorted(LANGUAGES)} "
@@ -2106,7 +2454,20 @@ class FloatingTranslator:
         """Return (language, text). A pinned language is passed through, which
         lets Whisper skip its own detection pass and saves roughly 0.3s."""
         lang = None if self.input_mode == "auto" else self.input_mode
+        if (self.ai_provider == "gemini" and self.ai_covers_speech
+                and self.cloud_active()):
+            try:
+                return self._gemini_stt().transcribe(audio, lang)
+            except Exception as e:
+                log(f"  gemini speech failed, using local: {e}")
         return self.get_stt().transcribe(audio, lang)
+
+    def _gemini_stt(self):
+        key = ("gemini_stt", self.ai_key[:8])
+        if key not in self._stt_cache:
+            self._stt_cache[key] = GeminiSTT(self.ai_key)
+            log("gemini speech ready")
+        return self._stt_cache[key]
 
     def set_whisper_model(self, choice):
         self.whisper_choice = choice
@@ -2274,8 +2635,21 @@ class FloatingTranslator:
                 if target_lang is None:
                     translated = text
                 else:
-                    translated = self.engine.translate(
-                        text, source_lang, target_lang)
+                    engine = self.current_translator()
+                    try:
+                        translated = engine.translate(
+                            text, source_lang, target_lang)
+                    except Exception as cloud_err:
+                        if engine is self.engine:
+                            raise
+                        # Cloud call failed mid-session - drop to local so
+                        # captions keep flowing, and say so once
+                        log(f"  cloud translate failed, using local: {cloud_err}")
+                        self.ai_error = str(cloud_err)
+                        self.ai_engine = None
+                        self.show_status("AI translation dropped - back to local")
+                        translated = self.engine.translate(
+                            text, source_lang, target_lang)
             except Exception as e:
                 log(f"  -> translation failed: {type(e).__name__}: {e}")
                 self.show_status(f"Translation failed: {e}")

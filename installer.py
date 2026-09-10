@@ -14,6 +14,8 @@ import sys
 import threading
 import tkinter as tk
 
+import appconfig
+
 APP_NAME = "Live Translator"
 APP_VERSION = "1.0.0"
 PUBLISHER = "Live Translator"
@@ -112,7 +114,7 @@ class Installer:
         self.root = tk.Tk()
         self.root.title(f"Install {APP_NAME}")
         self.root.configure(bg=BG)
-        self.root.geometry("520x260")
+        self.root.geometry("520x430")
         self.root.resizable(False, False)
 
         tk.Label(self.root, text=APP_NAME, bg=BG, fg=FG,
@@ -130,11 +132,53 @@ class Installer:
         self.canvas.create_line(0, 3, 420, 3, fill=TRACK, width=5)
         self.bar = self.canvas.create_line(0, 3, 0, 3, fill=ACCENT, width=5)
 
+        self._build_ai_section()
+
         self.button = tk.Button(self.root, text="Install", command=self.start,
                                 bg=ACCENT, fg=BG, font=("Segoe UI", 11, "bold"),
                                 relief="flat", padx=26, pady=7,
                                 activebackground=FG, cursor="hand2")
-        self.button.pack(pady=22)
+        self.button.pack(pady=14)
+
+    def _build_ai_section(self):
+        box = tk.LabelFrame(self.root, text=" AI translation (optional) ",
+                            bg=BG, fg=DIM, font=("Segoe UI", 9),
+                            padx=14, pady=8, bd=1)
+        box.pack(fill="x", padx=30, pady=(6, 0))
+
+        tk.Label(box, bg=BG, fg=DIM, font=("Segoe UI", 8), justify="left",
+                 wraplength=420,
+                 text=("Have a Claude or Gemini key? Add it now for much better "
+                       "translation - nothing extra to download. You can also "
+                       "add or remove it later from the app menu.")
+                 ).pack(anchor="w", pady=(0, 6))
+
+        self.ai_provider = tk.StringVar(value="off")
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w")
+        for val, txt in (("off", "Skip"), ("claude", "Claude"), ("gemini", "Gemini")):
+            tk.Radiobutton(row, text=txt, value=val, variable=self.ai_provider,
+                           command=self._ai_sync, bg=BG, fg=FG, selectcolor=TRACK,
+                           activebackground=BG, font=("Segoe UI", 9)
+                           ).pack(side="left", padx=(0, 12))
+
+        self.ai_key = tk.Entry(box, show="•", bg=TRACK, fg=FG, relief="flat",
+                               insertbackground=FG, font=("Segoe UI", 9),
+                               disabledbackground=BG)
+        self.ai_key.pack(fill="x", pady=(6, 2), ipady=4)
+        self.ai_speech = tk.BooleanVar(value=False)
+        self.ai_speech_cb = tk.Checkbutton(
+            box, text="Also use Gemini for speech (skip the 145 MB download)",
+            variable=self.ai_speech, bg=BG, fg=FG, selectcolor=TRACK,
+            activebackground=BG, font=("Segoe UI", 8))
+        self.ai_speech_cb.pack(anchor="w")
+        self._ai_sync()
+
+    def _ai_sync(self):
+        prov = self.ai_provider.get()
+        self.ai_key.configure(state="normal" if prov != "off" else "disabled")
+        self.ai_speech_cb.configure(
+            state="normal" if prov == "gemini" else "disabled")
 
     def say(self, text, progress=None):
         def apply():
@@ -193,6 +237,17 @@ class Installer:
 
             self.write_uninstaller(target)
 
+            prov = self.ai_provider.get()
+            ai_key = self.ai_key.get().strip() if prov != "off" else ""
+            ai_speech = self.ai_speech.get() and prov == "gemini"
+            if prov != "off" and ai_key:
+                try:
+                    appconfig.save(provider=prov, key=ai_key,
+                                   covers_speech=ai_speech, app_dir=target)
+                except Exception as exc:
+                    print("could not save AI settings:", exc)
+                    ai_speech = False
+
             self.say("Registering with Windows...", 0.45)
             try:
                 size = sum(os.path.getsize(os.path.join(r, f))
@@ -201,6 +256,11 @@ class Installer:
             except OSError as exc:
                 # Not fatal: uninstall.bat still works without the entry
                 print("registry entry skipped:", exc)
+
+            if ai_speech:
+                self.say("Using Gemini for speech - no model to download.", 1.0)
+                self.finish(exe)
+                return
 
             self.say("Downloading the speech model (about 145 MB). "
                      "This happens once.", 0.5)

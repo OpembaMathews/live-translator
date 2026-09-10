@@ -150,7 +150,7 @@ def write_spec(stage, onefile):
     for pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "sentencepiece"):
         from PyInstaller.utils.hooks import collect_data_files
         datas += collect_data_files(pkg)
-    hidden = []
+    hidden = ["appconfig"]
     for pkg in ("ctranslate2", "onnxruntime", "faster_whisper"):
         from PyInstaller.utils.hooks import collect_submodules
         hidden += collect_submodules(pkg)
@@ -178,6 +178,7 @@ def build(onefile=False):
         "--collect-all", "onnxruntime",
         "--collect-data", "sentencepiece",
         "--add-data", f"{stage}{os.pathsep}argos",
+        "--hidden-import", "appconfig",
     ]
     for mod in EXCLUDES:
         cmd += ["--exclude-module", mod]
@@ -220,6 +221,7 @@ def build_installer():
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile",
         "--windowed", "--name", "LiveTranslatorSetup", "--icon", str(icon),
         "--add-data", f"{DIST}{os.pathsep}payload",
+        "--hidden-import", "appconfig",
         "installer.py",
     ]
     subprocess.run(cmd, cwd=ROOT, check=True)
