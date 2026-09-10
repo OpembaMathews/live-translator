@@ -1677,6 +1677,7 @@ class FloatingTranslator:
         self.ai_covers_speech = cfg["ai_covers_speech"]
         self.ai_engine = None          # built lazily, replaced on config change
         self.ai_error = None
+        self._ai_speech_warned = False
 
         # Input meter. _level_raw is written by the audio thread and read by
         # the animation tick; a plain float assignment is atomic in CPython,
@@ -2312,6 +2313,9 @@ class FloatingTranslator:
         self.ai_covers_speech = covers_speech
         self.ai_engine = None          # force a rebuild with the new settings
         self.ai_error = None
+        self._ai_speech_warned = False
+        self._stt_cache = {k: v for k, v in self._stt_cache.items()
+                           if not (isinstance(k, tuple) and k[0] == "gemini_stt")}
         self.device_gen += 1           # reopen the speech path if it changed
         if provider == "off":
             self.show_status("AI translation off - using local models")
@@ -2460,6 +2464,10 @@ class FloatingTranslator:
                 return self._gemini_stt().transcribe(audio, lang)
             except Exception as e:
                 log(f"  gemini speech failed, using local: {e}")
+                if not self._ai_speech_warned:
+                    self._ai_speech_warned = True
+                    self.show_status("Gemini speech not working - using local. "
+                                     "Check the key in the menu.")
         return self.get_stt().transcribe(audio, lang)
 
     def _gemini_stt(self):
