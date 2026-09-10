@@ -1162,6 +1162,24 @@ def rounded_path(x1, y1, x2, y2, r, count, corner_points=BORDER_CORNER_POINTS):
     return [(x, y, dists[i] / total) for i, (x, y) in enumerate(pts)]
 
 
+def draw_rounded_rect_outline(canvas, x1, y1, x2, y2, radius, colour, width=1):
+    """Just the border of a rounded rectangle."""
+    r = max(0.0, min(radius, (x2 - x1) / 2, (y2 - y1) / 2))
+    canvas.create_line(x1 + r, y1, x2 - r, y1, fill=colour, width=width)
+    canvas.create_line(x1 + r, y2, x2 - r, y2, fill=colour, width=width)
+    canvas.create_line(x1, y1 + r, x1, y2 - r, fill=colour, width=width)
+    canvas.create_line(x2, y1 + r, x2, y2 - r, fill=colour, width=width)
+    d = r * 2
+    canvas.create_arc(x1, y1, x1 + d, y1 + d, start=90, extent=90,
+                      style=tk.ARC, outline=colour, width=width)
+    canvas.create_arc(x2 - d, y1, x2, y1 + d, start=0, extent=90,
+                      style=tk.ARC, outline=colour, width=width)
+    canvas.create_arc(x1, y2 - d, x1 + d, y2, start=180, extent=90,
+                      style=tk.ARC, outline=colour, width=width)
+    canvas.create_arc(x2 - d, y2 - d, x2, y2, start=270, extent=90,
+                      style=tk.ARC, outline=colour, width=width)
+
+
 def draw_rounded_rect(canvas, x1, y1, x2, y2, radius, fill):
     """Rounded rectangle from true circular quadrants plus two overlapping bars.
 
@@ -1626,6 +1644,551 @@ class SettingsPanel:
             pass
 
 
+CARD_BG = "#182C41"
+CARD_EDGE = "#3C5D80"
+SECTION_A = "#63D2FF"     # audio - cyan
+SECTION_B = "#8E9BE8"     # translation / appearance - periwinkle
+SECTION_C = "#B98CE8"     # performance - violet
+PILL_ON = "#3BB6E8"
+PILL_TXT_ON = "#04121C"
+
+
+def apply_acrylic(window):
+    """Windows 11 frosted-glass backdrop behind a borderless window.
+
+    Real compositor blur, so the settings surface reads as glass over the
+    desktop rather than a flat rectangle. Silently does nothing on older
+    Windows.
+    """
+    try:
+        import ctypes
+
+        window.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id()) or window.winfo_id()
+
+        class _ACCENT(ctypes.Structure):
+            _fields_ = [("state", ctypes.c_int), ("flags", ctypes.c_int),
+                        ("gradient", ctypes.c_uint), ("anim", ctypes.c_int)]
+
+        class _WCA(ctypes.Structure):
+            _fields_ = [("attr", ctypes.c_int),
+                        ("data", ctypes.POINTER(_ACCENT)),
+                        ("size", ctypes.c_size_t)]
+
+        accent = _ACCENT(4, 0, 0xB30D1B2A, 0)   # ACRYLICBLURBEHIND, tinted navy
+        wca = _WCA(19, ctypes.pointer(accent), ctypes.sizeof(accent))
+        ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(wca))
+        return True
+    except Exception:
+        return False
+
+
+class SettingsWindow:
+    """The full settings surface: three cards of controls over a glass backdrop.
+
+    Everything is canvas-drawn so it matches the widget's own look rather than
+    borrowing Windows' grey dialog chrome. A small toolkit of draw helpers
+    (pills, dropdowns, radios, slider) keeps each card declarative.
+    """
+
+    W, H = 968, 668
+    PAD = 26
+    GAP = 18
+    HEADER_H = 92
+
+    def __init__(self, app):
+        self.app = app
+        self.hits = []              # (x1, y1, x2, y2, callback)
+        self.hover = None
+        self.slider = None
+        self.dragging = False
+        self.dd_open = None         # (rect, options, callback) while a list is open
+        self._scale = 1.0
+
+        self.top = tk.Toplevel(app.root)
+        self.top.overrideredirect(True)
+        self.top.attributes("-topmost", True)
+        self.top.config(bg=PANEL_BG)
+
+        sw, sh = self.top.winfo_screenwidth(), self.top.winfo_screenheight()
+        self._scale = min(1.0, (sw - 60) / self.W, (sh - 60) / self.H)
+        w = int(self.W * self._scale)
+        h = int(self.H * self._scale)
+        self.top.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+        self.canvas = tk.Canvas(self.top, bg=PANEL_BG, highlightthickness=0,
+                                bd=0, width=w, height=h)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.scale_factor = self._scale
+        self.top.update_idletasks()
+        apply_dwm_rounding(self.top)
+        apply_acrylic(self.top)
+
+        self.canvas.bind("<Motion>", self.on_motion)
+        self.canvas.bind("<ButtonPress-1>", self.on_click)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>",
+                         lambda _e: setattr(self, "dragging", False))
+        self.top.bind("<Escape>", lambda _e: self.close())
+        self.canvas.bind("<ButtonPress-3>", lambda _e: self.close())
+
+        self.draw()
+        self.top.focus_force()
+        self.top.after(120, self._grab)
+
+    def _grab(self):
+        try:
+            self.top.grab_set()
+        except tk.TclError:
+            pass
+
+    # -- geometry helpers --------------------------------------------------
+    def s(self, v):
+        return v * self._scale
+
+    def font(self, size, weight="normal", cjk=False):
+        family = self.app.cjk_font if cjk else self.app.latin_font
+        return (family, max(7, int(size * self._scale)), weight)
+
+    # -- toolkit ---------------------------------------------------------
+    def card(self, x, y, w, h, title, colour):
+        c = self.canvas
+        draw_rounded_rect(c, x, y, x + w, y + h, self.s(14), CARD_BG)
+        draw_rounded_rect(c, x, y, x + w, y + self.s(2), self.s(14),
+                          blend(CARD_BG, "#FFFFFF", 0.06))
+        for off in (0, 1):
+            draw_rounded_rect_outline(c, x + off, y + off, x + w - off,
+                                      y + h - off, self.s(14),
+                                      CARD_EDGE if off == 0 else
+                                      blend(CARD_BG, CARD_EDGE, 0.4))
+        ix, iy = x + self.s(22), y + self.s(24)
+        for r, shade in ((self.s(15), 0.10), (self.s(11), 0.22), (self.s(8), 1.0)):
+            c.create_oval(ix - r, iy - r, ix + r, iy + r,
+                          fill=blend(CARD_BG, colour, shade), outline="")
+        c.create_text(ix + self.s(24), iy, anchor="w", text=title.upper(),
+                      font=self.font(9.5, "bold"), fill=colour)
+        return y + self.s(52)      # content start y
+
+    def field_label(self, x, y, text):
+        self.canvas.create_text(x, y, anchor="w", text=text,
+                                font=self.font(9.5), fill="#9FB4CB")
+        return y + self.s(20)
+
+    _PILL_SHORT = {"Far (presentation)": "Far", "Very far": "Far+",
+                   "Full": "Full", "Accurate (base)": "Accurate",
+                   "Fast (tiny)": "Fast"}
+
+    def pills(self, x, y, w, options, current, callback):
+        c = self.canvas
+        n = len(options)
+        gap = self.s(6)
+        pw = (w - gap * (n - 1)) / n
+        ph = self.s(32)
+        for i, opt in enumerate(options):
+            px = x + i * (pw + gap)
+            on = opt == current
+            hot = self.hover == ("pill", id(callback), i)
+            fill = PILL_ON if on else (CONTROL_HOT if hot else CONTROL_BG)
+            if on:
+                draw_rounded_rect(c, px - self.s(1.5), y - self.s(1.5),
+                                  px + pw + self.s(1.5), y + ph + self.s(1.5),
+                                  self.s(10), blend(CARD_BG, PILL_ON, 0.4))
+            draw_rounded_rect(c, px, y, px + pw, y + ph, self.s(9), fill)
+            c.create_text(px + pw / 2, y + ph / 2,
+                          text=self._PILL_SHORT.get(opt, opt),
+                          font=self.font(8.5, "bold" if on else "normal"),
+                          fill=PILL_TXT_ON if on else TEXT_COLOR,
+                          width=pw - self.s(6))
+            self.hits.append((px, y, px + pw, y + ph,
+                              (lambda o=opt: callback(o)),
+                              ("pill", id(callback), i)))
+        return y + ph + self.s(12)
+
+    def dropdown(self, x, y, w, value, options, callback):
+        c = self.canvas
+        dh = self.s(34)
+        hot = self.hover == ("dd", id(callback))
+        draw_rounded_rect(c, x, y, x + w, y + dh, self.s(9),
+                          CONTROL_HOT if hot else CONTROL_BG)
+        c.create_text(x + self.s(12), y + dh / 2, anchor="w", text=value,
+                      font=self.font(9.5), fill=TEXT_COLOR,
+                      width=w - self.s(30))
+        ax = x + w - self.s(16)
+        ay = y + dh / 2
+        c.create_line(ax - self.s(4), ay - self.s(2), ax, ay + self.s(3),
+                      fill=ACCENT_HOT, width=1.6)
+        c.create_line(ax, ay + self.s(3), ax + self.s(4), ay - self.s(2),
+                      fill=ACCENT_HOT, width=1.6)
+        self.hits.append((x, y, x + w, y + dh,
+                          (lambda: self._toggle_dropdown((x, y, w, dh), options,
+                                                         callback)),
+                          ("dd", id(callback))))
+        return y + dh + self.s(12)
+
+    def radio(self, x, y, text, selected, callback, cjk=False):
+        c = self.canvas
+        rh = self.s(28)
+        cy = y + rh / 2
+        r = self.s(7)
+        hot = self.hover == ("radio", id(callback), text)
+        c.create_oval(x, cy - r, x + 2 * r, cy + r, width=1.6,
+                      outline=PILL_ON if selected else ACCENT)
+        if selected:
+            c.create_oval(x + r - self.s(3.5), cy - self.s(3.5),
+                          x + r + self.s(3.5), cy + self.s(3.5),
+                          fill=PILL_ON, outline="")
+        c.create_text(x + 2 * r + self.s(10), cy, anchor="w", text=text,
+                      font=self.font(9.5, cjk=cjk),
+                      fill=TEXT_COLOR if (selected or hot) else "#B9C9DA")
+        self.hits.append((x, y, x + self.s(220), y + rh, callback,
+                          ("radio", id(callback), text)))
+        return y + rh
+
+    def opacity_slider(self, x, y, w):
+        c = self.canvas
+        cy = y + self.s(14)
+        frac = (self.app.opacity - 0.35) / 0.65
+        c.create_line(x, cy, x + w, cy, fill=CONTROL_BG, width=self.s(4),
+                      capstyle=tk.ROUND)
+        kx = x + frac * w
+        c.create_line(x, cy, kx, cy, fill=PILL_ON, width=self.s(4),
+                      capstyle=tk.ROUND)
+        c.create_oval(kx - self.s(7), cy - self.s(7), kx + self.s(7),
+                      cy + self.s(7), fill=WAVE_PEAK, outline="")
+        c.create_text(x + w + self.s(14), cy, anchor="w",
+                      text=f"{int(self.app.opacity * 100)}%",
+                      font=self.font(9), fill=NOTICE_COLOR)
+        self.slider = (x, x + w, cy)
+        return y + self.s(34)
+
+    def link_row(self, x, y, w, text, callback):
+        c = self.canvas
+        rh = self.s(30)
+        hot = self.hover == ("link", id(callback))
+        if hot:
+            draw_rounded_rect(c, x - self.s(6), y, x + w, y + rh, self.s(8),
+                              CONTROL_BG)
+        c.create_text(x, y + rh / 2, anchor="w", text=text,
+                      font=self.font(9.5), fill=ACCENT_HOT)
+        c.create_text(x + w - self.s(10), y + rh / 2, anchor="e", text="›",
+                      font=self.font(12), fill=ACCENT_HOT)
+        self.hits.append((x - self.s(6), y, x + w, y + rh, callback,
+                          ("link", id(callback))))
+        return y + rh
+
+    def divider(self, x, y, w):
+        self.canvas.create_line(x, y, x + w, y, fill=CARD_EDGE)
+        return y + self.s(14)
+
+    # -- content -------------------------------------------------------
+    def draw(self):
+        c = self.canvas
+        c.delete("all")
+        self.hits = []
+        self.slider = None
+        c.create_rectangle(0, 0, self.s(self.W), self.s(self.H),
+                           fill=PANEL_BG, outline=PANEL_BG)
+
+        self._header()
+
+        col_w = (self.s(self.W) - self.s(self.PAD) * 2
+                 - self.s(self.GAP) * 2) / 3
+        top = self.s(self.HEADER_H) + self.s(10)
+        x0 = self.s(self.PAD)
+        x1 = x0 + col_w + self.s(self.GAP)
+        x2 = x1 + col_w + self.s(self.GAP)
+        body_h = self.s(self.H) - top - self.s(self.PAD)
+
+        t_h = self.s(250)
+        self._audio_card(x0, top, col_w, body_h)
+        self._translation_card(x1, top, col_w, t_h)
+        self._appearance_card(x1, top + t_h + self.s(14),
+                              col_w, body_h - t_h - self.s(14))
+        self._performance_card(x2, top, col_w, body_h)
+
+        if self.dd_open:
+            self._draw_dropdown_list()
+
+    def _header(self):
+        c = self.canvas
+        ix, iy = self.s(self.PAD + 24), self.s(46)
+        for r, shade in ((self.s(30), 0.12), (self.s(24), 0.22),
+                         (self.s(19), 0.5), (self.s(15), 1.0)):
+            c.create_oval(ix - r, iy - r, ix + r, iy + r,
+                          fill=blend(PANEL_BG, WAVE_PEAK, shade), outline="")
+        c.create_text(ix, iy + self.s(1), text="\U0001f3a4",
+                      font=self.font(15))
+        c.create_text(ix + self.s(42), self.s(36), anchor="w",
+                      text="Translator Settings",
+                      font=self.font(17, "bold"), fill=TEXT_COLOR)
+        c.create_text(ix + self.s(42), self.s(58), anchor="w",
+                      text="Configure listening, translation and widget behaviour.",
+                      font=self.font(9.5), fill=NOTICE_COLOR)
+        # close
+        cx = self.s(self.W) - self.s(30)
+        cy = self.s(34)
+        hot = self.hover == ("close", 0)
+        if hot:
+            c.create_oval(cx - self.s(13), cy - self.s(13), cx + self.s(13),
+                          cy + self.s(13), fill=CONTROL_BG, outline="")
+        for a, b in (((-6, -6), (6, 6)), ((6, -6), (-6, 6))):
+            c.create_line(cx + self.s(a[0]), cy + self.s(a[1]),
+                          cx + self.s(b[0]), cy + self.s(b[1]),
+                          fill=ACCENT_HOT, width=1.8)
+        self.hits.append((cx - self.s(15), cy - self.s(15), cx + self.s(15),
+                          cy + self.s(15), self.close, ("close", 0)))
+
+    def _audio_card(self, x, y, w, h):
+        app = self.app
+        cy = self.card(x, y, w, h, "Audio", SECTION_A)
+        ix = x + self.s(22)
+        iw = w - self.s(44)
+
+        cy = self.field_label(ix, cy, "Audio input")
+        mics = [{"index": None, "kind": "mic", "label": "System default"}]
+        mics += [d for d in _safe(list_input_devices)]
+        cur = next((d["label"] for d in mics if d["label"] == app.device_label),
+                   app.device_label)
+        cy = self.dropdown(
+            ix, cy, iw, cur,
+            [(d["label"], (lambda dd=d: app.select_device(
+                dd["index"], dd["label"], dd.get("kind", "mic"))))
+             for d in mics],
+            None)
+        for d in mics[1:]:
+            on = app.device_label == d["label"] and app.device_kind == "mic"
+            cy = self.radio(ix, cy, d["label"], on,
+                            (lambda dd=d: app.select_device(
+                                dd["index"], dd["label"], "mic")))
+        cy += self.s(4)
+
+        cy = self.field_label(ix, cy + self.s(4), "Sensitivity")
+        cy = self.pills(ix, cy, iw, list(SENSITIVITY_PRESETS), app.sensitivity,
+                        app.set_sensitivity)
+
+        cy = self.divider(ix, cy + self.s(4), iw)
+        loop = _safe(list_loopback_devices)
+        cy = self.field_label(ix, cy, "Listen to playback")
+        if loop:
+            lcur = next((d["label"] for d in loop
+                         if d["label"] == app.device_label), loop[0]["label"])
+            cy = self.dropdown(
+                ix, cy, iw, lcur,
+                [(d["label"], (lambda dd=d: app.select_device(
+                    dd["index"], dd["label"], "loopback"))) for d in loop],
+                None)
+            self.canvas.create_text(
+                ix, cy - self.s(4), anchor="nw", width=iw,
+                text="Capture what this PC plays - for a video or call.",
+                font=self.font(8.5), fill=NOTICE_COLOR)
+            cy += self.s(28)
+        else:
+            self.canvas.create_text(
+                ix, cy, anchor="nw", width=iw,
+                text="No playback device. Enable Stereo Mix in Sound settings.",
+                font=self.font(8.5), fill=NOTICE_COLOR)
+            cy += self.s(30)
+
+        self.link_row(ix, cy, iw, "Refresh devices", self.reopen)
+
+    def _translation_card(self, x, y, w, h):
+        app = self.app
+        cy = self.card(x, y, w, h, "Translation", SECTION_B)
+        ix = x + self.s(22)
+        iw = w - self.s(44)
+
+        src = ("Auto detect" if app.input_mode == "auto"
+               else LANG_NAMES[app.input_mode])
+        cy = self.field_label(ix, cy, "Source language")
+        cy = self.dropdown(
+            ix, cy, iw, src,
+            [("Auto detect", lambda: app.set_input_mode("auto"))]
+            + [(LANG_NAMES[c], (lambda cc=c: app.set_input_mode(cc)))
+               for c in LANGUAGES],
+            None)
+
+        tgt = ("The other language" if app.target_mode == "auto"
+               else LANG_NAMES[app.target_mode])
+        cy = self.field_label(ix, cy + self.s(2), "Target language")
+        cy = self.dropdown(
+            ix, cy, iw, tgt,
+            [("The other language", lambda: app.set_target_mode("auto"))]
+            + [(LANG_NAMES[c], (lambda cc=c: app.set_target_mode(cc)))
+               for c in LANGUAGES],
+            None)
+
+        eng = (f"AI: {app.ai_provider.title()}" if app.cloud_active()
+               else "Local (offline)")
+        cy = self.field_label(ix, cy + self.s(2), "Translation engine")
+        self.dropdown(
+            ix, cy, iw, eng,
+            [("Local (offline)", lambda: app.apply_ai_settings("off", "", False)),
+             ("AI: use my key…", app.open_ai_dialog)],
+            None)
+
+    def _appearance_card(self, x, y, w, h):
+        app = self.app
+        cy = self.card(x, y, w, h, "Appearance", SECTION_B)
+        ix = x + self.s(22)
+        iw = w - self.s(44)
+
+        cy = self.field_label(ix, cy - self.s(2), "Widget size")
+        names = list(SIZE_PRESETS) + ["Full"]
+        cur = "Full" if getattr(app, "_full_width", False) else app._size_name
+        cy = self.pills(ix, cy, iw, names, cur,
+                        lambda n: (app.apply_full_width() if n == "Full"
+                                   else app.apply_preset(n)))
+
+        cy = self.field_label(ix, cy - self.s(2), "Opacity")
+        cy = self.opacity_slider(ix, cy, iw - self.s(46))
+
+        cy = self.field_label(ix, cy, "Border glow")
+        self.pills(ix, cy, iw, ["On", "Off"],
+                   "On" if app.border_glow else "Off",
+                   lambda v: app.set_border_glow(v == "On"))
+
+    def _performance_card(self, x, y, w, h):
+        app = self.app
+        cy = self.card(x, y, w, h, "Performance", SECTION_C)
+        ix = x + self.s(22)
+        iw = w - self.s(44)
+
+        cy = self.field_label(ix, cy, "Response")
+        cy = self.pills(ix, cy, iw, list(RESPONSE_PRESETS), app.response,
+                        app.set_response)
+
+        cy = self.field_label(ix, cy + self.s(10), "Speech recognition")
+        for choice in WHISPER_MODELS:
+            on = app.stt_kind == "whisper" and app.whisper_choice == choice
+            cy = self.radio(ix, cy, choice, on,
+                            (lambda c=choice: app.set_whisper_model(c)))
+        cy = self.radio(ix, cy, "Online (Google)", app.stt_kind == "google",
+                        lambda: app.set_stt("google"))
+
+        by = y + h - self.s(50)
+        hot = self.hover == ("quit", 0)
+        draw_rounded_rect(self.canvas, ix, by, ix + iw, by + self.s(34),
+                          self.s(9), CONTROL_HOT if hot else CONTROL_BG)
+        self.canvas.create_text(ix + iw / 2, by + self.s(17),
+                                text="Quit application",
+                                font=self.font(9.5, "bold"), fill="#E88C8C")
+        self.hits.append((ix, by, ix + iw, by + self.s(34), app.close,
+                          ("quit", 0)))
+
+    # -- dropdown overlay --------------------------------------------------
+    def _toggle_dropdown(self, rect, options, _cb):
+        if self.dd_open and self.dd_open[0] == rect:
+            self.dd_open = None
+        else:
+            self.dd_open = (rect, options, _cb)
+        self.draw()
+
+    def _draw_dropdown_list(self):
+        c = self.canvas
+        (x, y, w, dh), options, _cb = self.dd_open
+        rh = self.s(30)
+        lh = rh * len(options) + self.s(8)
+        ly = y + dh + self.s(4)
+        if ly + lh > self.s(self.H):
+            ly = y - lh - self.s(4)
+        draw_rounded_rect(c, x, ly, x + w, ly + lh, self.s(10), CONTROL_BG)
+        c.create_rectangle(x, ly, x + w, ly + lh, outline=CARD_EDGE)
+        for i, (label, action) in enumerate(options):
+            ry = ly + self.s(4) + i * rh
+            hot = self.hover == ("ddopt", i)
+            if hot:
+                draw_rounded_rect(c, x + self.s(4), ry, x + w - self.s(4),
+                                  ry + rh, self.s(7), CONTROL_HOT)
+            c.create_text(x + self.s(14), ry + rh / 2, anchor="w", text=label,
+                          font=self.font(9.5),
+                          fill=TEXT_COLOR if hot else "#B9C9DA",
+                          width=w - self.s(24))
+            self.hits.append((x, ry, x + w, ry + rh,
+                              (lambda a=action: self._pick(a)), ("ddopt", i)))
+
+    def _pick(self, action):
+        self.dd_open = None
+        if action:
+            action()
+        self.app.root.after(60, self._refresh)
+
+    def _refresh(self):
+        if self.app.settings_win is self:
+            self.draw()
+
+    # -- interaction -----------------------------------------------------
+    def _hit(self, x, y):
+        for entry in reversed(self.hits):
+            x1, y1, x2, y2 = entry[:4]
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return entry
+        return None
+
+    def on_motion(self, event):
+        entry = self._hit(event.x, event.y)
+        tag = entry[5] if entry and len(entry) > 5 else None
+        if tag != self.hover:
+            self.hover = tag
+            self.draw()
+        over = entry is not None or self._slider_hit(event.x, event.y)
+        self.canvas.config(cursor="hand2" if over else "")
+
+    def on_click(self, event):
+        if not (0 <= event.x <= self.s(self.W) and 0 <= event.y <= self.s(self.H)):
+            self.close()
+            return
+        if self._slider_hit(event.x, event.y):
+            self.dragging = True
+            self._set_slider(event.x)
+            return
+        entry = self._hit(event.x, event.y)
+        if entry is None:
+            if self.dd_open:
+                self.dd_open = None
+                self.draw()
+            return
+        cb = entry[4]
+        if cb:
+            cb()
+
+    def on_drag(self, event):
+        if self.dragging and self.slider:
+            self._set_slider(event.x)
+
+    def _slider_hit(self, x, y):
+        if not self.slider:
+            return False
+        left, right, cy = self.slider
+        return left - self.s(10) <= x <= right + self.s(10) \
+            and abs(y - cy) <= self.s(14)
+
+    def _set_slider(self, x):
+        left, right, _cy = self.slider
+        frac = max(0.0, min(1.0, (x - left) / max(1, right - left)))
+        self.app.set_opacity(0.35 + frac * 0.65)
+        self.draw()
+
+    def reopen(self):
+        self.close()
+        self.app.open_settings()
+
+    def close(self):
+        if getattr(self.app, "settings_win", None) is self:
+            self.app.settings_win = None
+        try:
+            self.top.grab_release()
+            self.top.destroy()
+        except tk.TclError:
+            pass
+
+
+def _safe(fn):
+    try:
+        return list(fn())
+    except Exception:
+        return []
+
+
 class FloatingTranslator:
     def __init__(self, engine_name=ENGINE, input_mode=DEFAULT_INPUT):
         self.recognizer = sr.Recognizer()
@@ -1660,6 +2223,10 @@ class FloatingTranslator:
         self._controls = {}
         self._chip_box = None
         self.opacity = 1.0
+        self._size_name = DEFAULT_PRESET
+        self._full_width = False
+        self.border_glow = True
+        self.settings_win = None
         self.paused = False
         self.sensitivity = DEFAULT_SENSITIVITY
         self.response = DEFAULT_RESPONSE
@@ -1744,12 +2311,36 @@ class FloatingTranslator:
     def apply_preset(self, name, keep_position=True):
         width, height, font_size = SIZE_PRESETS[name]
         self._font_size = font_size
+        self._size_name = name
+        self._full_width = False
         self.set_geometry(width, height, keep_position)
 
     def apply_full_width(self):
         width = self.root.winfo_screenwidth() - 80
         self._font_size = SIZE_PRESETS["Large"][2]
+        self._full_width = True
         self.set_geometry(width, SIZE_PRESETS["Large"][1], keep_position=False)
+
+    def set_border_glow(self, on):
+        self.border_glow = bool(on)
+        if not on:
+            for item, _t in self._border_items:
+                try:
+                    self.canvas.itemconfig(item, fill=PANEL_BG)
+                except tk.TclError:
+                    pass
+        log(f"border glow {'on' if on else 'off'}")
+
+    def open_settings(self):
+        if self.panel is not None:
+            self.panel.close()
+        if self.settings_win is not None:
+            self.settings_win.close()
+            return
+        try:
+            self.settings_win = SettingsWindow(self)
+        except tk.TclError:
+            self.settings_win = None
 
     def set_geometry(self, width, height, keep_position=True):
         screen_w = self.root.winfo_screenwidth()
@@ -1999,7 +2590,7 @@ class FloatingTranslator:
                 break  # canvas was rebuilt; skip this frame, keep the loop alive
 
         if self._border_items:
-            if self._listening:
+            if self._listening and self.border_glow:
                 lap = (self._phase * BORDER_SPEED) % 1.0
                 for item, t in self._border_items:
                     # Two crests chase each other around the frame. Using the
@@ -2195,13 +2786,17 @@ class FloatingTranslator:
     def show_menu(self, event, mode="full"):
         if self.closing:
             return
-        if self.panel is not None:    # second click on the button closes it
-            self.panel.close()
+        if mode == "language":
+            if self.panel is not None:
+                self.panel.close()
+                return
+            try:
+                self.panel = SettingsPanel(self, event.x_root, event.y_root,
+                                           "language")
+            except tk.TclError:
+                self.panel = None
             return
-        try:
-            self.panel = SettingsPanel(self, event.x_root, event.y_root, mode)
-        except tk.TclError:
-            self.panel = None
+        self.open_settings()
 
     def set_opacity(self, value):
         """Panel translucency, 0.35..1.0. A slider, because three named steps
