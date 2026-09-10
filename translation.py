@@ -2250,7 +2250,7 @@ class FloatingTranslator:
         self.canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "_drag_mode", None))
         self.canvas.bind("<Motion>", self.on_hover)
         self.canvas.bind("<ButtonPress-3>", self.show_menu)
-        self.root.bind("<Escape>", lambda _e: self.close())
+        self.root.bind("<Escape>", self._on_escape)
 
         self.panel = None          # settings popover, created on demand
         self.animate()
@@ -2812,6 +2812,18 @@ class FloatingTranslator:
         self.device_gen += 1          # forces a recalibration on the new setting
         log(f"sensitivity -> {name}")
         self.show_status(f"Sensitivity: {name}")
+
+    def _on_escape(self, _event=None):
+        """Escape closes an open panel first, and only quits the app when
+        nothing else is open. Previously it always quit, so pressing Escape
+        to dismiss the settings window killed the whole app."""
+        if self.settings_win is not None:
+            self.settings_win.close()
+            return
+        if self.panel is not None:
+            self.panel.close()
+            return
+        self.close()
 
     def close(self):
         self.closing = True
