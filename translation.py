@@ -267,6 +267,7 @@ LOADER_SPEED = 0.55        # sweeps per second
 ACCENT = "#5C7A99"        # muted steel blue for the controls
 ACCENT_HOT = "#9EC1E8"    # brighter blue when hovering a control
 CONTROL_BG = "#16293D"    # subtle plate behind the control cluster
+CONTROL_HOT = "#22405E"   # same plate, hovered
 NOTICE_COLOR = "#6E8CAB"  # status line, deliberately quieter than the caption
 NOTICE_STRIP = 17         # height reserved at the bottom for the status line
 
@@ -1027,20 +1028,25 @@ class SettingsPanel:
 
     ROW_H = 28
     HEAD_H = 26
+    SLIDER_H = 36
     COL_W = 196
     PAD = 14
     DOT_X = 12
 
-    def __init__(self, app, anchor_x, anchor_y):
+    def __init__(self, app, anchor_x, anchor_y, mode="full"):
         self.app = app
+        self.mode = mode
         self.hover = None
         self.hits = []
+        self.slider = None          # (x1, x2, y_centre) once drawn
+        self.dragging = False
 
-        self.columns = self.build_columns()
-        heights = [
-            sum(self.HEAD_H if r[0] == "header" else self.ROW_H for r in col)
-            for col in self.columns
-        ]
+        self.columns = (self.build_language_columns() if mode == "language"
+                        else self.build_columns())
+        def row_h(kind):
+            return {"header": self.HEAD_H, "slider": self.SLIDER_H}.get(
+                kind, self.ROW_H)
+        heights = [sum(row_h(r[0]) for r in col) for col in self.columns]
         self.w = len(self.columns) * self.COL_W + self.PAD * 2
         self.h = max(heights) + self.PAD * 2
 
@@ -1068,6 +1074,8 @@ class SettingsPanel:
 
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<ButtonPress-1>", self.on_click)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "dragging", False))
         self.top.bind("<Escape>", lambda _e: self.close())
         self.top.bind("<FocusOut>", lambda _e: self.close())
 
@@ -1075,6 +1083,36 @@ class SettingsPanel:
         self.top.focus_force()
 
     # -- content -----------------------------------------------------------
+    def build_language_columns(self):
+        """The compact popover behind the direction chip.
+
+        Language is the setting that changes most, so it gets its own small
+        surface instead of being two sections inside a 33-item menu.
+        """
+        app = self.app
+        speaking = [("header", "Speaking", None, False)]
+        speaking.append((
+            "item", "Auto detect",
+            (lambda: app.set_input_mode("auto")), app.input_mode == "auto",
+        ))
+        for code in LANGUAGES:
+            speaking.append((
+                "item", LANG_NAMES[code],
+                (lambda c=code: app.set_input_mode(c)), app.input_mode == code,
+            ))
+
+        showing = [("header", "Show me", None, False)]
+        showing.append((
+            "item", "The other language",
+            (lambda: app.set_target_mode("auto")), app.target_mode == "auto",
+        ))
+        for code in LANGUAGES:
+            showing.append((
+                "item", LANG_NAMES[code],
+                (lambda c=code: app.set_target_mode(c)), app.target_mode == code,
+            ))
+        return [speaking, showing]
+
     def build_columns(self):
         app = self.app
         audio = [("header", "Audio input", None, False)]
@@ -1115,28 +1153,8 @@ class SettingsPanel:
             (lambda: app.set_stt("google")), app.stt_kind == "google",
         ))
 
-        listen = [("header", "Speaking", None, False)]
-        listen.append((
-            "item", "Auto detect",
-            (lambda: app.set_input_mode("auto")), app.input_mode == "auto",
-        ))
-        for code in LANGUAGES:
-            listen.append((
-                "item", LANG_NAMES[code],
-                (lambda c=code: app.set_input_mode(c)), app.input_mode == code,
-            ))
-
-        listen.append(("header", "Show me", None, False))
-        listen.append((
-            "item", "The other language",
-            (lambda: app.set_target_mode("auto")), app.target_mode == "auto",
-        ))
-        for code in LANGUAGES:
-            listen.append((
-                "item", LANG_NAMES[code],
-                (lambda c=code: app.set_target_mode(c)), app.target_mode == code,
-            ))
-        listen.append(("header", "Sensitivity", None, False))
+        # Language lives on the panel now, behind the direction chip
+        listen = [("header", "Sensitivity", None, False)]
         for name in SENSITIVITY_PRESETS:
             listen.append((
                 "item", name,
@@ -1148,6 +1166,9 @@ class SettingsPanel:
             listen.append(("item", name, (lambda n=name: app.apply_preset(n)), False))
         listen.append(("item", "Full width", app.apply_full_width, False))
 
+        listen.append(("note", "Languages: click the chip on the panel",
+                       None, False))
+
         misc = [("header", "Response", None, False)]
         for name in RESPONSE_PRESETS:
             misc.append((
@@ -1155,16 +1176,8 @@ class SettingsPanel:
                 (lambda n=name: app.set_response(n)), app.response == name,
             ))
         misc.append(("header", "Opacity", None, False))
-        for label, value in (("Solid", 1.0), ("Faded", 0.85), ("Ghost", 0.65)):
-            misc.append((
-                "item", label,
-                (lambda v=value: app.root.attributes("-alpha", v)), False,
-            ))
+        misc.append(("slider", "opacity", None, False))
         misc.append(("header", "App", None, False))
-        misc.append((
-            "item", "Stop listening" if not app.paused else "Start listening",
-            app.toggle_listening, False,
-        ))
         misc.append(("item", "Quit", app.close, False))
         return [audio, listen, misc]
 
@@ -1203,6 +1216,11 @@ class SettingsPanel:
                     y += self.ROW_H
                     continue
 
+                if kind == "slider":
+                    self.draw_slider(c, x0, y)
+                    y += self.SLIDER_H
+                    continue
+
                 index = len(self.hits)
                 hot = self.hover == index
                 if hot:
@@ -1225,6 +1243,39 @@ class SettingsPanel:
                 self.hits.append((x0, y, x0 + self.COL_W - 12, y + self.ROW_H, action))
                 y += self.ROW_H
 
+    def draw_slider(self, c, x0, y):
+        """A horizontal track with a draggable knob, for opacity."""
+        left = x0 + self.DOT_X + 4
+        right = x0 + self.COL_W - 18
+        cy = y + self.SLIDER_H / 2 + 3
+        frac = (self.app.opacity - 0.35) / 0.65
+
+        c.create_line(left, cy, right, cy, fill=CONTROL_BG, width=4,
+                      capstyle=tk.ROUND)
+        knob_x = left + frac * (right - left)
+        c.create_line(left, cy, knob_x, cy, fill=ACCENT, width=4,
+                      capstyle=tk.ROUND)
+        c.create_oval(knob_x - 6, cy - 6, knob_x + 6, cy + 6,
+                      fill=WAVE_PEAK, outline="")
+        c.create_text(left, y + 9, anchor="w", text="Opacity",
+                      font=(self.app.font_family, 8), fill=ACCENT)
+        c.create_text(right, y + 9, anchor="e",
+                      text=f"{int(self.app.opacity * 100)}%",
+                      font=(self.app.font_family, 8), fill=NOTICE_COLOR)
+        self.slider = (left, right, cy)
+
+    def slider_hit(self, x, y):
+        if not self.slider:
+            return False
+        left, right, cy = self.slider
+        return left - 10 <= x <= right + 10 and abs(y - cy) <= 14
+
+    def set_from_slider(self, x):
+        left, right, _cy = self.slider
+        frac = max(0.0, min(1.0, (x - left) / max(1, right - left)))
+        self.app.set_opacity(0.35 + frac * 0.65)
+        self.draw()
+
     @staticmethod
     def clip(label, limit=21):
         """Keep a label inside its column.
@@ -1243,16 +1294,22 @@ class SettingsPanel:
 
     def on_motion(self, event):
         index = self.hit(event.x, event.y)
+        over_slider = self.slider_hit(event.x, event.y)
         if index != self.hover:
             self.hover = index
-            self.canvas.config(cursor="hand2" if index is not None else "")
             self.draw()
+        cursor = "hand2" if (index is not None or over_slider) else ""
+        self.canvas.config(cursor=cursor)
 
     def on_click(self, event):
         # With a grab in place, clicks outside arrive with out-of-range coords
         if not (0 <= event.x <= self.w and 0 <= event.y <= self.h):
             self.close()
             return
+        if self.slider_hit(event.x, event.y):
+            self.dragging = True
+            self.set_from_slider(event.x)
+            return                       # the menu stays open while adjusting
         index = self.hit(event.x, event.y)
         if index is None:
             return
@@ -1260,6 +1317,10 @@ class SettingsPanel:
         self.close()
         if action:
             action()
+
+    def on_drag(self, event):
+        if self.dragging and self.slider:
+            self.set_from_slider(event.x)
 
     def reopen(self):
         """Rebuild in place so a newly plugged-in device shows up. The anchor
@@ -1312,6 +1373,8 @@ class FloatingTranslator:
         self._loader = None        # (x1, x2, y) of the track, set while drawing
         self._loader_item = None
         self._controls = {}
+        self._chip_box = None
+        self.opacity = 1.0
         self.paused = False
         self.sensitivity = DEFAULT_SENSITIVITY
         self.response = DEFAULT_RESPONSE
@@ -1516,7 +1579,7 @@ class FloatingTranslator:
 
     def layout_controls(self, w, h):
         """Right-aligned button strip. Returns the x where the buttons start."""
-        names = ["listen", "menu", "close"]
+        names = ["source", "listen", "menu", "close"]
         total = len(names) * CONTROL_SIZE + (len(names) - 1) * CONTROL_GAP
         x = w - EDGE_PAD // 2 - total
         y = (h - CONTROL_SIZE) / 2
@@ -1538,7 +1601,23 @@ class FloatingTranslator:
             colour = ACCENT_HOT if hot else ACCENT
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
 
-            if name == "listen":
+            if name == "source":
+                if self.device_kind == "loopback":
+                    # a screen, meaning "what this computer is playing"
+                    c.create_rectangle(cx - 7, cy - 5, cx + 7, cy + 4,
+                                       outline=colour, width=1.6)
+                    c.create_line(cx - 4, cy + 7, cx + 4, cy + 7,
+                                  fill=colour, width=1.6)
+                    c.create_line(cx, cy + 4, cx, cy + 7, fill=colour, width=1.6)
+                else:
+                    # a microphone, meaning "the room"
+                    c.create_oval(cx - 3, cy - 8, cx + 3, cy + 1,
+                                  outline=colour, width=1.6)
+                    c.create_arc(cx - 6, cy - 4, cx + 6, cy + 6,
+                                 start=200, extent=140, style=tk.ARC,
+                                 outline=colour, width=1.6)
+                    c.create_line(cx, cy + 5, cx, cy + 8, fill=colour, width=1.6)
+            elif name == "listen":
                 if self.paused:
                     # Record: a filled dot, red so it reads as "arm capture"
                     dot = RECORD_HOT if hot else RECORD_COLOR
@@ -1576,9 +1655,15 @@ class FloatingTranslator:
         )
         box = c.bbox(item)
         if box:
+            hot = self._hover == "chip"
             draw_rounded_rect(c, box[0] - 6, box[1] - 3, box[2] + 6, box[3] + 3,
-                              8, CONTROL_BG)
+                              8, CONTROL_HOT if hot else CONTROL_BG)
             c.tag_raise(item)
+            c.itemconfig(item, fill=TEXT_COLOR if hot else ACCENT_HOT)
+            # clickable: the languages are the setting people change most
+            self._chip_box = (box[0] - 6, box[1] - 3, box[2] + 6, box[3] + 3)
+        else:
+            self._chip_box = None
 
         span = min(h / 2 - 8, 26)
         for i in range(WAVE_RINGS):
@@ -1751,8 +1836,16 @@ class FloatingTranslator:
                 return name
         return None
 
+    def in_chip(self, x, y):
+        if not self._chip_box:
+            return False
+        x1, y1, x2, y2 = self._chip_box
+        return x1 <= x <= x2 and y1 <= y <= y2
+
     def on_hover(self, event):
         control = self.hit_control(event.x, event.y)
+        if not control and self.in_chip(event.x, event.y):
+            control = "chip"
         if control:
             zone, cursor = control, "hand2"
         elif self.in_grip(event.x, event.y):
@@ -1772,6 +1865,12 @@ class FloatingTranslator:
             return
         if control == "listen":
             self.toggle_listening()
+            return
+        if control == "source":
+            self.toggle_source()
+            return
+        if self.in_chip(event.x, event.y):
+            self.show_menu(event, mode="language")
             return
         if control == "menu":
             self.show_menu(event)
@@ -1797,16 +1896,43 @@ class FloatingTranslator:
         else:
             self.root.geometry(f"+{self._start_x + dx}+{self._start_y + dy}")
 
-    def show_menu(self, event):
+    def show_menu(self, event, mode="full"):
         if self.closing:
             return
         if self.panel is not None:    # second click on the button closes it
             self.panel.close()
             return
         try:
-            self.panel = SettingsPanel(self, event.x_root, event.y_root)
+            self.panel = SettingsPanel(self, event.x_root, event.y_root, mode)
         except tk.TclError:
             self.panel = None
+
+    def set_opacity(self, value):
+        """Panel translucency, 0.35..1.0. A slider, because three named steps
+        never landed where you actually wanted it."""
+        self.opacity = max(0.35, min(1.0, value))
+        try:
+            self.root.attributes("-alpha", self.opacity)
+        except tk.TclError:
+            pass
+
+    def toggle_source(self):
+        """Swap between hearing the room and hearing this machine.
+
+        This is the switch people actually flip during use - presenting versus
+        watching something - so it belongs on the panel rather than three
+        levels into a menu.
+        """
+        if self.device_kind == "loopback":
+            target = next((d for d in list_input_devices()), None)
+            kind = "mic"
+        else:
+            target = next((d for d in list_loopback_devices()), None)
+            kind = "loopback"
+        if target is None:
+            self.show_status("No other audio source available")
+            return
+        self.select_device(target["index"], target["label"], kind)
 
     def toggle_listening(self):
         """Stop/start capture. Pausing releases the microphone entirely rather
@@ -2145,7 +2271,11 @@ class FloatingTranslator:
             log(f"  heard [{source_lang}] +{heard_at - captured_at:.2f}s: {text!r}")
             try:
                 # Same language in and out: show the transcript untranslated
-                translated = text if target_lang is None else                     self.engine.translate(text, source_lang, target_lang)
+                if target_lang is None:
+                    translated = text
+                else:
+                    translated = self.engine.translate(
+                        text, source_lang, target_lang)
             except Exception as e:
                 log(f"  -> translation failed: {type(e).__name__}: {e}")
                 self.show_status(f"Translation failed: {e}")
