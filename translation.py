@@ -1644,43 +1644,13 @@ class SettingsPanel:
             pass
 
 
-CARD_BG = "#182C41"
-CARD_EDGE = "#3C5D80"
-SECTION_A = "#63D2FF"     # audio - cyan
-SECTION_B = "#8E9BE8"     # translation / appearance - periwinkle
-SECTION_C = "#B98CE8"     # performance - violet
-PILL_ON = "#3BB6E8"
-PILL_TXT_ON = "#04121C"
-
-
-def apply_acrylic(window):
-    """Windows 11 frosted-glass backdrop behind a borderless window.
-
-    Real compositor blur, so the settings surface reads as glass over the
-    desktop rather than a flat rectangle. Silently does nothing on older
-    Windows.
-    """
-    try:
-        import ctypes
-
-        window.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id()) or window.winfo_id()
-
-        class _ACCENT(ctypes.Structure):
-            _fields_ = [("state", ctypes.c_int), ("flags", ctypes.c_int),
-                        ("gradient", ctypes.c_uint), ("anim", ctypes.c_int)]
-
-        class _WCA(ctypes.Structure):
-            _fields_ = [("attr", ctypes.c_int),
-                        ("data", ctypes.POINTER(_ACCENT)),
-                        ("size", ctypes.c_size_t)]
-
-        accent = _ACCENT(4, 0, 0xB30D1B2A, 0)   # ACRYLICBLURBEHIND, tinted navy
-        wca = _WCA(19, ctypes.pointer(accent), ctypes.sizeof(accent))
-        ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(wca))
-        return True
-    except Exception:
-        return False
+CARD_BG = "#12212F"      # flat panel, one step off the window
+CARD_EDGE = "#2A3E52"     # thin solid border
+SECTION_A = "#5FB8D8"     # audio
+SECTION_B = "#7E8FC4"     # translation / appearance
+SECTION_C = "#A386C4"     # performance
+PILL_ON = "#2E7FA8"       # solid selected fill
+PILL_TXT_ON = "#EAF4FA"
 
 
 class SettingsWindow:
@@ -1691,10 +1661,10 @@ class SettingsWindow:
     (pills, dropdowns, radios, slider) keeps each card declarative.
     """
 
-    W, H = 968, 668
-    PAD = 26
-    GAP = 18
-    HEADER_H = 92
+    W, H = 716, 560
+    PAD = 18
+    GAP = 12
+    HEADER_H = 62
 
     def __init__(self, app):
         self.app = app
@@ -1711,7 +1681,7 @@ class SettingsWindow:
         self.top.config(bg=PANEL_BG)
 
         sw, sh = self.top.winfo_screenwidth(), self.top.winfo_screenheight()
-        self._scale = min(1.0, (sw - 60) / self.W, (sh - 60) / self.H)
+        self._scale = min(1.0, (sw - 40) / self.W, (sh - 40) / self.H)
         w = int(self.W * self._scale)
         h = int(self.H * self._scale)
         self.top.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
@@ -1722,7 +1692,6 @@ class SettingsWindow:
         self.canvas.scale_factor = self._scale
         self.top.update_idletasks()
         apply_dwm_rounding(self.top)
-        apply_acrylic(self.top)
 
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<ButtonPress-1>", self.on_click)
@@ -1753,66 +1722,59 @@ class SettingsWindow:
     # -- toolkit ---------------------------------------------------------
     def card(self, x, y, w, h, title, colour):
         c = self.canvas
-        draw_rounded_rect(c, x, y, x + w, y + h, self.s(14), CARD_BG)
-        draw_rounded_rect(c, x, y, x + w, y + self.s(2), self.s(14),
-                          blend(CARD_BG, "#FFFFFF", 0.06))
-        for off in (0, 1):
-            draw_rounded_rect_outline(c, x + off, y + off, x + w - off,
-                                      y + h - off, self.s(14),
-                                      CARD_EDGE if off == 0 else
-                                      blend(CARD_BG, CARD_EDGE, 0.4))
-        ix, iy = x + self.s(22), y + self.s(24)
-        for r, shade in ((self.s(15), 0.10), (self.s(11), 0.22), (self.s(8), 1.0)):
-            c.create_oval(ix - r, iy - r, ix + r, iy + r,
-                          fill=blend(CARD_BG, colour, shade), outline="")
-        c.create_text(ix + self.s(24), iy, anchor="w", text=title.upper(),
-                      font=self.font(9.5, "bold"), fill=colour)
-        return y + self.s(52)      # content start y
+        draw_rounded_rect(c, x, y, x + w, y + h, self.s(9), CARD_BG)
+        draw_rounded_rect_outline(c, x, y, x + w, y + h, self.s(9), CARD_EDGE)
+        ix, iy = x + self.s(16), y + self.s(18)
+        c.create_rectangle(ix - self.s(3), iy - self.s(3), ix + self.s(3),
+                           iy + self.s(3), fill=colour, outline="")
+        c.create_text(ix + self.s(14), iy, anchor="w", text=title.upper(),
+                      font=self.font(9, "bold"), fill=colour)
+        c.create_line(ix - self.s(3), iy + self.s(14), x + w - self.s(14),
+                      iy + self.s(14), fill=CARD_EDGE)
+        return y + self.s(46)
 
     def field_label(self, x, y, text):
         self.canvas.create_text(x, y, anchor="w", text=text,
                                 font=self.font(9.5), fill="#9FB4CB")
         return y + self.s(20)
 
+    def _trunc(self, text, px_w):
+        approx = max(4, int(px_w / max(1.0, self.s(9) * 0.56)))
+        return text if len(text) <= approx else text[:approx - 1] + "…"
+
     _PILL_SHORT = {"Far (presentation)": "Far", "Very far": "Far+",
-                   "Full": "Full", "Accurate (base)": "Accurate",
-                   "Fast (tiny)": "Fast"}
+                   "Accurate (base)": "Accurate", "Fast (tiny)": "Fast"}
 
     def pills(self, x, y, w, options, current, callback):
         c = self.canvas
         n = len(options)
-        gap = self.s(6)
+        gap = self.s(5)
         pw = (w - gap * (n - 1)) / n
-        ph = self.s(32)
+        ph = self.s(28)
         for i, opt in enumerate(options):
             px = x + i * (pw + gap)
             on = opt == current
             hot = self.hover == ("pill", id(callback), i)
             fill = PILL_ON if on else (CONTROL_HOT if hot else CONTROL_BG)
-            if on:
-                draw_rounded_rect(c, px - self.s(1.5), y - self.s(1.5),
-                                  px + pw + self.s(1.5), y + ph + self.s(1.5),
-                                  self.s(10), blend(CARD_BG, PILL_ON, 0.4))
-            draw_rounded_rect(c, px, y, px + pw, y + ph, self.s(9), fill)
+            draw_rounded_rect(c, px, y, px + pw, y + ph, self.s(6), fill)
             c.create_text(px + pw / 2, y + ph / 2,
                           text=self._PILL_SHORT.get(opt, opt),
-                          font=self.font(8.5, "bold" if on else "normal"),
-                          fill=PILL_TXT_ON if on else TEXT_COLOR,
-                          width=pw - self.s(6))
+                          font=self.font(7.5, "bold" if on else "normal"),
+                          fill=PILL_TXT_ON if on else TEXT_COLOR)
             self.hits.append((px, y, px + pw, y + ph,
                               (lambda o=opt: callback(o)),
                               ("pill", id(callback), i)))
-        return y + ph + self.s(12)
+        return y + ph + self.s(9)
 
     def dropdown(self, x, y, w, value, options, callback):
         c = self.canvas
-        dh = self.s(34)
+        dh = self.s(31)
         hot = self.hover == ("dd", id(callback))
-        draw_rounded_rect(c, x, y, x + w, y + dh, self.s(9),
+        draw_rounded_rect(c, x, y, x + w, y + dh, self.s(8),
                           CONTROL_HOT if hot else CONTROL_BG)
-        c.create_text(x + self.s(12), y + dh / 2, anchor="w", text=value,
-                      font=self.font(9.5), fill=TEXT_COLOR,
-                      width=w - self.s(30))
+        c.create_text(x + self.s(11), y + dh / 2, anchor="w",
+                      text=self._trunc(value, w - self.s(54)),
+                      font=self.font(9), fill=TEXT_COLOR)
         ax = x + w - self.s(16)
         ay = y + dh / 2
         c.create_line(ax - self.s(4), ay - self.s(2), ax, ay + self.s(3),
@@ -1899,7 +1861,7 @@ class SettingsWindow:
         x2 = x1 + col_w + self.s(self.GAP)
         body_h = self.s(self.H) - top - self.s(self.PAD)
 
-        t_h = self.s(250)
+        t_h = self.s(238)
         self._audio_card(x0, top, col_w, body_h)
         self._translation_card(x1, top, col_w, t_h)
         self._appearance_card(x1, top + t_h + self.s(14),
@@ -1911,32 +1873,31 @@ class SettingsWindow:
 
     def _header(self):
         c = self.canvas
-        ix, iy = self.s(self.PAD + 24), self.s(46)
-        for r, shade in ((self.s(30), 0.12), (self.s(24), 0.22),
-                         (self.s(19), 0.5), (self.s(15), 1.0)):
-            c.create_oval(ix - r, iy - r, ix + r, iy + r,
-                          fill=blend(PANEL_BG, WAVE_PEAK, shade), outline="")
-        c.create_text(ix, iy + self.s(1), text="\U0001f3a4",
-                      font=self.font(15))
-        c.create_text(ix + self.s(42), self.s(36), anchor="w",
+        ix, iy = self.s(self.PAD + 7), self.s(27)
+        # small drawn microphone, one solid colour
+        draw_rounded_rect(c, ix - self.s(3.5), iy - self.s(8),
+                          ix + self.s(3.5), iy + self.s(1), self.s(3.5), SECTION_A)
+        c.create_arc(ix - self.s(7), iy - self.s(4), ix + self.s(7),
+                     iy + self.s(6), start=200, extent=140, style=tk.ARC,
+                     outline=SECTION_A, width=1.6)
+        c.create_line(ix, iy + self.s(5), ix, iy + self.s(9),
+                      fill=SECTION_A, width=1.6)
+        c.create_text(ix + self.s(19), self.s(21), anchor="w",
                       text="Translator Settings",
-                      font=self.font(17, "bold"), fill=TEXT_COLOR)
-        c.create_text(ix + self.s(42), self.s(58), anchor="w",
-                      text="Configure listening, translation and widget behaviour.",
-                      font=self.font(9.5), fill=NOTICE_COLOR)
-        # close
-        cx = self.s(self.W) - self.s(30)
-        cy = self.s(34)
+                      font=self.font(12.5, "bold"), fill=TEXT_COLOR)
+        c.create_text(ix + self.s(19), self.s(38), anchor="w",
+                      text="Listening, translation and widget behaviour",
+                      font=self.font(8), fill=NOTICE_COLOR)
+        cx = self.s(self.W) - self.s(20)
+        cy = self.s(21)
         hot = self.hover == ("close", 0)
-        if hot:
-            c.create_oval(cx - self.s(13), cy - self.s(13), cx + self.s(13),
-                          cy + self.s(13), fill=CONTROL_BG, outline="")
-        for a, b in (((-6, -6), (6, 6)), ((6, -6), (-6, 6))):
-            c.create_line(cx + self.s(a[0]), cy + self.s(a[1]),
-                          cx + self.s(b[0]), cy + self.s(b[1]),
-                          fill=ACCENT_HOT, width=1.8)
-        self.hits.append((cx - self.s(15), cy - self.s(15), cx + self.s(15),
-                          cy + self.s(15), self.close, ("close", 0)))
+        col = TEXT_COLOR if hot else ACCENT_HOT
+        for pa, pb in (((-5, -5), (5, 5)), ((5, -5), (-5, 5))):
+            c.create_line(cx + self.s(pa[0]), cy + self.s(pa[1]),
+                          cx + self.s(pb[0]), cy + self.s(pb[1]),
+                          fill=col, width=1.6)
+        self.hits.append((cx - self.s(12), cy - self.s(12), cx + self.s(12),
+                          cy + self.s(12), self.close, ("close", 0)))
 
     def _audio_card(self, x, y, w, h):
         app = self.app
