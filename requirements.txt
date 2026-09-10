@@ -1,0 +1,7 @@
+faster-whisper
+ctranslate2
+sentencepiece
+SpeechRecognition
+PyAudio
+PyAudioWPatch
+numpy

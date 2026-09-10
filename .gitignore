@@ -1,0 +1,12 @@
+# Build output - regenerate with build.py
+build/
+dist/
+*.spec
+
+# Runtime
+translator.log
+__pycache__/
+*.pyc
+
+# Scratch
+New Text Document.txt
