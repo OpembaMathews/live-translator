@@ -23,6 +23,55 @@ except ImportError:  # pragma: no cover - depends on interpreter version
     import numpy as _np
 
 
+def enable_dpi_awareness():
+    """Tell Windows we paint in real pixels, and report the display's scale.
+
+    Without this the process is DPI-virtualised: we are allowed to draw at 96
+    DPI and Windows then bitmap-stretches the finished window up to whatever
+    the display is scaled to. Every glyph, hairline and rounded corner gets
+    resampled, which is what made the panel look soft. Once the process is
+    aware, one canvas unit is one physical pixel and Tk sizes point fonts from
+    the true DPI, so text is rendered at its real size instead of stretched.
+
+    Must run before the first Tk window exists, hence the module-level call.
+    """
+    if sys.platform != "win32":
+        return 1.0
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        try:
+            # PER_MONITOR_AWARE_V2: correct on multi-monitor mixed-DPI setups
+            user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except AttributeError:      # Windows 10 pre-1703
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        dc = user32.GetDC(0)
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(dc, 88)   # LOGPIXELSX
+        user32.ReleaseDC(0, dc)
+        return (dpi / 96.0) if dpi else 1.0
+    except Exception:
+        return 1.0
+
+
+UI_SCALE = enable_dpi_awareness()
+
+
+def px(value):
+    """Design units -> physical pixels. For coordinates and sizes only.
+
+    Font sizes stay untouched: Tk already reads the real DPI and converts
+    points to pixels itself, so scaling them here would apply it twice.
+    """
+    return value * UI_SCALE
+
+
+def ipx(value):
+    """px() for anything that ends up in a Tk geometry string, which
+    rejects a float."""
+    return int(round(value * UI_SCALE))
+
+
 def chunk_rms(data, sample_width):
     """Loudness of one audio chunk, 0..32767 for 16-bit samples."""
     if audioop is not None:
@@ -250,14 +299,14 @@ RECORD_HOT = "#FF7B74"
 # travelling around the perimeter, scaled by how loud the input is, so the
 # whole frame reacts to speech while staying invisible in silence.
 BORDER_SEGMENTS = 72
-BORDER_INSET = 2.5
+BORDER_INSET = px(2.5)
 # Measured from a screenshot: the compositor rounds this window with a ~9
 # physical px radius, which is 7.2 logical px at 125% scaling. A border inset
 # by d stays parallel to that edge only if its own radius is (7.2 - d).
-WINDOW_CORNER_RADIUS = 7.2
+WINDOW_CORNER_RADIUS = px(7.2)
 BORDER_RADIUS = WINDOW_CORNER_RADIUS - BORDER_INSET
 BORDER_CORNER_POINTS = 7   # corners are ~1% of the perimeter; sample them anyway
-BORDER_WIDTH = 2.0
+BORDER_WIDTH = px(2.0)
 BORDER_SPEED = 0.42        # laps per second
 BORDER_IDLE = 0.10         # faint shimmer while listening but silent
 
@@ -267,14 +316,14 @@ LOADER_TRACK = "#1B3149"   # the groove
 LOADER_FILL = "#63D2FF"    # the travelling segment, matching the meter
 LOADER_WIDTH_FRAC = 0.46   # track width as a fraction of the caption area
 LOADER_SEG_FRAC = 0.32     # travelling segment, as a fraction of the track
-LOADER_THICKNESS = 3
+LOADER_THICKNESS = px(3)
 LOADER_SPEED = 0.55        # sweeps per second
 ACCENT = "#5C7A99"        # muted steel blue for the controls
 ACCENT_HOT = "#9EC1E8"    # brighter blue when hovering a control
 CONTROL_BG = "#16293D"    # subtle plate behind the control cluster
 CONTROL_HOT = "#22405E"   # same plate, hovered
 NOTICE_COLOR = "#6E8CAB"  # status line, deliberately quieter than the caption
-NOTICE_STRIP = 17         # height reserved at the bottom for the status line
+NOTICE_STRIP_PAD = px(7)  # breathing room above and below the status line
 
 # Latin text uses the modern Windows UI face; CJK needs a font that actually
 # carries the glyphs, or Tk silently falls back to something ugly.
@@ -283,18 +332,20 @@ CJK_FONTS = ("Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans TC", "PMi
 CJK_LANGS = ("zt", "zh", "ja", "ko")
 
 # Named window sizes: (width, height, font size)
+# Widths and heights are pixels so they scale with the display; the third
+# value is a font size in points, which Tk scales on its own.
 SIZE_PRESETS = {
-    "Small": (620, 78, 18),
-    "Medium": (900, 112, 26),
-    "Large": (1240, 162, 36),
+    "Small": (ipx(620), ipx(78), 18),
+    "Medium": (ipx(900), ipx(112), 26),
+    "Large": (ipx(1240), ipx(162), 36),
 }
 DEFAULT_PRESET = "Medium"
 
-MIN_WIDTH, MIN_HEIGHT = 320, 60
-EDGE_PAD = 18      # inner text padding
-GRIP_ZONE = 20     # size of the bottom-right resize hot corner
-CONTROL_SIZE = 30  # square hit area for each on-panel button
-CONTROL_GAP = 3
+MIN_WIDTH, MIN_HEIGHT = ipx(320), ipx(60)
+EDGE_PAD = ipx(18)      # inner text padding
+GRIP_ZONE = ipx(20)     # size of the bottom-right resize hot corner
+CONTROL_SIZE = ipx(30)  # square hit area for each on-panel button
+CONTROL_GAP = ipx(3)
 
 # How hard to listen. A presenter standing away from the laptop is much
 # quieter at the mic than someone leaning into it, so the speech threshold
@@ -332,7 +383,7 @@ DEFAULT_RESPONSE = "Balanced"
 MAX_PENDING = 3
 
 # Live input meter ("radio waves" radiating from a dot on the left)
-WAVE_ZONE = 78     # horizontal space reserved for the meter
+WAVE_ZONE = ipx(78)  # horizontal space reserved for the meter
 WAVE_RINGS = 4
 WAVE_FPS = 25
 WAVE_IDLE = "#26405C"   # ring colour when nothing is being heard
@@ -1319,12 +1370,12 @@ class SettingsPanel:
     and fonts, which looked like a different program bolted onto the panel.
     """
 
-    ROW_H = 28
-    HEAD_H = 26
-    SLIDER_H = 36
-    COL_W = 196
-    PAD = 14
-    DOT_X = 12
+    ROW_H = ipx(28)
+    HEAD_H = ipx(26)
+    SLIDER_H = ipx(36)
+    COL_W = ipx(196)
+    PAD = ipx(14)
+    DOT_X = ipx(12)
 
     def __init__(self, app, anchor_x, anchor_y, mode="full"):
         self.app = app
@@ -1351,10 +1402,11 @@ class SettingsPanel:
         # Keep the popover fully on screen, preferring above the button
         screen_w = self.top.winfo_screenwidth()
         screen_h = self.top.winfo_screenheight()
-        x = max(6, min(anchor_x - self.w + 40, screen_w - self.w - 6))
-        y = anchor_y - self.h - 10
-        if y < 6:
-            y = min(anchor_y + 40, screen_h - self.h - 6)
+        x = max(px(6), min(anchor_x - self.w + px(40),
+                           screen_w - self.w - px(6)))
+        y = anchor_y - self.h - px(10)
+        if y < px(6):
+            y = min(anchor_y + px(40), screen_h - self.h - px(6))
         self.top.geometry(f"{self.w}x{self.h}+{int(x)}+{int(y)}")
 
         self.canvas = tk.Canvas(
@@ -1497,14 +1549,14 @@ class SettingsPanel:
             for kind, label, action, selected in col:
                 if kind == "header":
                     c.create_text(
-                        x0 + self.DOT_X - 4, y + self.HEAD_H / 2,
+                        x0 + self.DOT_X - px(4), y + self.HEAD_H / 2,
                         text=label.upper(), anchor="w",
                         font=(self.app.font_family, 8),
                         fill=ACCENT,
                     )
                     c.create_line(
-                        x0 + self.DOT_X - 4, y + self.HEAD_H - 4,
-                        x0 + self.COL_W - 16, y + self.HEAD_H - 4,
+                        x0 + self.DOT_X - px(4), y + self.HEAD_H - px(4),
+                        x0 + self.COL_W - px(16), y + self.HEAD_H - px(4),
                         fill=CONTROL_BG,
                     )
                     y += self.HEAD_H
@@ -1512,8 +1564,8 @@ class SettingsPanel:
 
                 if kind == "note":
                     c.create_text(
-                        x0 + self.DOT_X - 4, y + self.ROW_H / 2,
-                        text=label, anchor="w", width=self.COL_W - 24,
+                        x0 + self.DOT_X - px(4), y + self.ROW_H / 2,
+                        text=label, anchor="w", width=self.COL_W - px(24),
                         font=(self.app.font_family, 8), fill=NOTICE_COLOR,
                     )
                     y += self.ROW_H
@@ -1528,41 +1580,43 @@ class SettingsPanel:
                 hot = self.hover == index
                 if hot:
                     draw_rounded_rect(
-                        c, x0, y + 1, x0 + self.COL_W - 12, y + self.ROW_H - 1,
-                        7, CONTROL_BG,
+                        c, x0, y + px(1), x0 + self.COL_W - px(12),
+                        y + self.ROW_H - px(1), px(7), CONTROL_BG,
                     )
                 if selected:
                     cy = y + self.ROW_H / 2
                     c.create_oval(
-                        x0 + self.DOT_X - 7, cy - 3, x0 + self.DOT_X - 1, cy + 3,
+                        x0 + self.DOT_X - px(7), cy - px(3),
+                        x0 + self.DOT_X - px(1), cy + px(3),
                         fill=WAVE_PEAK, outline="",
                     )
                 c.create_text(
-                    x0 + self.DOT_X + 8, y + self.ROW_H / 2,
+                    x0 + self.DOT_X + px(8), y + self.ROW_H / 2,
                     text=self.clip(label), anchor="w",
                     font=(self.app.font_family, 10),
                     fill=TEXT_COLOR if (hot or selected) else "#B9C9DA",
                 )
-                self.hits.append((x0, y, x0 + self.COL_W - 12, y + self.ROW_H, action))
+                self.hits.append((x0, y, x0 + self.COL_W - px(12),
+                                  y + self.ROW_H, action))
                 y += self.ROW_H
 
     def draw_slider(self, c, x0, y):
         """A horizontal track with a draggable knob, for opacity."""
-        left = x0 + self.DOT_X + 4
-        right = x0 + self.COL_W - 18
-        cy = y + self.SLIDER_H / 2 + 3
+        left = x0 + self.DOT_X + px(4)
+        right = x0 + self.COL_W - px(18)
+        cy = y + self.SLIDER_H / 2 + px(3)
         frac = (self.app.opacity - 0.35) / 0.65
 
-        c.create_line(left, cy, right, cy, fill=CONTROL_BG, width=4,
+        c.create_line(left, cy, right, cy, fill=CONTROL_BG, width=px(4),
                       capstyle=tk.ROUND)
         knob_x = left + frac * (right - left)
-        c.create_line(left, cy, knob_x, cy, fill=ACCENT, width=4,
+        c.create_line(left, cy, knob_x, cy, fill=ACCENT, width=px(4),
                       capstyle=tk.ROUND)
-        c.create_oval(knob_x - 6, cy - 6, knob_x + 6, cy + 6,
+        c.create_oval(knob_x - px(6), cy - px(6), knob_x + px(6), cy + px(6),
                       fill=WAVE_PEAK, outline="")
-        c.create_text(left, y + 9, anchor="w", text="Opacity",
+        c.create_text(left, y + px(9), anchor="w", text="Opacity",
                       font=(self.app.font_family, 8), fill=ACCENT)
-        c.create_text(right, y + 9, anchor="e",
+        c.create_text(right, y + px(9), anchor="e",
                       text=f"{int(self.app.opacity * 100)}%",
                       font=(self.app.font_family, 8), fill=NOTICE_COLOR)
         self.slider = (left, right, cy)
@@ -1571,7 +1625,8 @@ class SettingsPanel:
         if not self.slider:
             return False
         left, right, cy = self.slider
-        return left - 10 <= x <= right + 10 and abs(y - cy) <= 14
+        return (left - px(10) <= x <= right + px(10)
+                and abs(y - cy) <= px(14))
 
     def set_from_slider(self, x):
         left, right, _cy = self.slider
@@ -1673,7 +1728,9 @@ class SettingsWindow:
         self.slider = None
         self.dragging = False
         self.dd_open = None         # (rect, options, callback) while a list is open
-        self._scale = 1.0
+        self._measure = None        # cached font metrics for _trunc
+        self._fit = 1.0             # extra shrink when the screen is small
+        self._scale = UI_SCALE      # design units -> physical pixels
 
         self.top = tk.Toplevel(app.root)
         self.top.overrideredirect(True)
@@ -1681,7 +1738,11 @@ class SettingsWindow:
         self.top.config(bg=PANEL_BG)
 
         sw, sh = self.top.winfo_screenwidth(), self.top.winfo_screenheight()
-        self._scale = min(1.0, (sw - 40) / self.W, (sh - 40) / self.H)
+        # W/H are design units, so the window wants W * UI_SCALE real pixels.
+        # _fit only kicks in when that would not fit on this screen.
+        self._fit = min(1.0, (sw - px(40)) / px(self.W),
+                        (sh - px(40)) / px(self.H))
+        self._scale = UI_SCALE * self._fit
         w = int(self.W * self._scale)
         h = int(self.H * self._scale)
         self.top.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
@@ -1716,8 +1777,11 @@ class SettingsWindow:
         return v * self._scale
 
     def font(self, size, weight="normal", cjk=False):
+        # Tk converts points using the real DPI once the process is DPI-aware,
+        # so only the fit-to-screen shrink belongs here. Multiplying by
+        # _scale as well would apply the display scaling twice.
         family = self.app.cjk_font if cjk else self.app.latin_font
-        return (family, max(7, int(size * self._scale)), weight)
+        return (family, max(7, int(size * self._fit)), weight)
 
     # -- toolkit ---------------------------------------------------------
     def card(self, x, y, w, h, title, colour):
@@ -1739,8 +1803,18 @@ class SettingsWindow:
         return y + self.s(20)
 
     def _trunc(self, text, px_w):
-        approx = max(4, int(px_w / max(1.0, self.s(9) * 0.56)))
-        return text if len(text) <= approx else text[:approx - 1] + "…"
+        """Cut a label to px_w, measured in the face that will draw it."""
+        from tkinter import font as tkfont
+
+        if self._measure is None:
+            self._measure = tkfont.Font(root=self.top, font=self.font(9))
+        f = self._measure
+        if f.measure(text) <= px_w:
+            return text
+        ell = "…"
+        while text and f.measure(text + ell) > px_w:
+            text = text[:-1]
+        return text + ell
 
     _PILL_SHORT = {"Far (presentation)": "Far", "Very far": "Far+",
                    "Accurate (base)": "Accurate", "Fast (tiny)": "Fast"}
@@ -1773,14 +1847,14 @@ class SettingsWindow:
         draw_rounded_rect(c, x, y, x + w, y + dh, self.s(8),
                           CONTROL_HOT if hot else CONTROL_BG)
         c.create_text(x + self.s(11), y + dh / 2, anchor="w",
-                      text=self._trunc(value, w - self.s(54)),
+                      text=self._trunc(value, w - self.s(38)),
                       font=self.font(9), fill=TEXT_COLOR)
         ax = x + w - self.s(16)
         ay = y + dh / 2
         c.create_line(ax - self.s(4), ay - self.s(2), ax, ay + self.s(3),
-                      fill=ACCENT_HOT, width=1.6)
+                      fill=ACCENT_HOT, width=self.s(1.6))
         c.create_line(ax, ay + self.s(3), ax + self.s(4), ay - self.s(2),
-                      fill=ACCENT_HOT, width=1.6)
+                      fill=ACCENT_HOT, width=self.s(1.6))
         self.hits.append((x, y, x + w, y + dh,
                           (lambda: self._toggle_dropdown((x, y, w, dh), options,
                                                          callback)),
@@ -1879,9 +1953,9 @@ class SettingsWindow:
                           ix + self.s(3.5), iy + self.s(1), self.s(3.5), SECTION_A)
         c.create_arc(ix - self.s(7), iy - self.s(4), ix + self.s(7),
                      iy + self.s(6), start=200, extent=140, style=tk.ARC,
-                     outline=SECTION_A, width=1.6)
+                     outline=SECTION_A, width=self.s(1.6))
         c.create_line(ix, iy + self.s(5), ix, iy + self.s(9),
-                      fill=SECTION_A, width=1.6)
+                      fill=SECTION_A, width=self.s(1.6))
         c.create_text(ix + self.s(19), self.s(21), anchor="w",
                       text="Translator Settings",
                       font=self.font(12.5, "bold"), fill=TEXT_COLOR)
@@ -1895,7 +1969,7 @@ class SettingsWindow:
         for pa, pb in (((-5, -5), (5, 5)), ((5, -5), (-5, 5))):
             c.create_line(cx + self.s(pa[0]), cy + self.s(pa[1]),
                           cx + self.s(pb[0]), cy + self.s(pb[1]),
-                          fill=col, width=1.6)
+                          fill=col, width=self.s(1.6))
         self.hits.append((cx - self.s(12), cy - self.s(12), cx + self.s(12),
                           cy + self.s(12), self.close, ("close", 0)))
 
@@ -2210,6 +2284,8 @@ class FloatingTranslator:
         # so no lock is needed for a value that is only ever displayed.
         self._level_raw = 0.0
         self._level = 0.0
+        self._notice_h = px(24)     # measured on first use
+        self._notice_h_for = None
         self._level_scale = WAVE_FULL_SCALE
         self._wave_items = []
         self._border_items = []
@@ -2302,6 +2378,7 @@ class FloatingTranslator:
             self.settings_win = None
 
     def set_geometry(self, width, height, keep_position=True):
+        width, height = int(width), int(height)   # Tk geometry rejects floats
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         width = max(MIN_WIDTH, min(width, screen_w))
@@ -2336,7 +2413,7 @@ class FloatingTranslator:
 
         # Centre the caption in the space left between meter and controls
         text_left, text_right = WAVE_ZONE, controls_left
-        body_height = h - (NOTICE_STRIP if self._notice else 0)
+        body_height = h - (self.notice_strip() if self._notice else 0)
         caption_font = (self.font_for(self._text), self._font_size, CAPTION_WEIGHT)
         cx = (text_left + text_right) // 2
         cy = body_height // 2
@@ -2361,7 +2438,7 @@ class FloatingTranslator:
             return
         # A soft shadow one pixel down gives the glyphs an edge, which matters
         # when the panel is floating over a bright slide
-        for dx, dy in ((1, 2), (-1, 2)):
+        for dx, dy in ((px(1), px(2)), (px(-1), px(2))):
             c.create_text(
                 cx + dx, cy + dy, text=self._text, font=caption_font,
                 fill=CAPTION_SHADOW, width=wrap, justify="center", tags="shadow",
@@ -2399,15 +2476,38 @@ class FloatingTranslator:
             )
             self._border_items.append((item, t))
 
+    def notice_font_size(self):
+        return max(9, int(self._font_size * 0.42))
+
+    def notice_strip(self):
+        """Height to reserve for the status line, from its own metrics.
+
+        Tk sizes fonts in points off the real DPI, so the pixel height of the
+        notice depends on both the caption size and the display scaling. A
+        hardcoded strip clipped the descenders; this asks the font instead.
+        """
+        size = self.notice_font_size()
+        if self._notice_h_for != size:
+            from tkinter import font as tkfont
+
+            face = tkfont.Font(root=self.root, family=self.latin_font,
+                               size=size)
+            self._notice_h = face.metrics("linespace") + NOTICE_STRIP_PAD
+            self._notice_h_for = size
+        return self._notice_h
+
     def draw_notice(self, h, text_left, text_right):
         """Small status line along the bottom edge."""
         if not self._notice:
             return
+        # Anchored by its baseline box rather than its centre, so a taller
+        # face grows upwards into the panel instead of off the bottom edge.
         self.canvas.create_text(
             (text_left + text_right) // 2,
-            h - NOTICE_STRIP / 2 - 2,
+            h - BORDER_INSET - px(4),
             text=self._notice,
-            font=(self.font_for(self._notice), max(9, int(self._font_size * 0.42))),
+            anchor="s",
+            font=(self.font_for(self._notice), self.notice_font_size()),
             fill=NOTICE_COLOR,
             width=max(80, text_right - text_left - EDGE_PAD),
             justify="center",
@@ -2417,10 +2517,10 @@ class FloatingTranslator:
     def draw_grip(self, w, h):
         """Bottom-right resize handle: two short diagonal strokes."""
         grip_fill = ACCENT_HOT if self._hover == "grip" else ACCENT
-        for offset in (4, 9):
+        for offset in (px(4), px(9)):
             self.canvas.create_line(
-                w - offset - 3, h - 4, w - 4, h - offset - 3,
-                fill=grip_fill, width=1.6, tags="grip",
+                w - offset - px(3), h - px(4), w - px(4), h - offset - px(3),
+                fill=grip_fill, width=px(1.6), tags="grip",
             )
 
     def layout_controls(self, w, h):
@@ -2440,55 +2540,60 @@ class FloatingTranslator:
         """Buttons drawn as vector shapes - glyph fonts render inconsistently
         at these sizes and looked fuzzy against the panel."""
         c = self.canvas
+        u = px                      # every offset below is in design units
         for name, (x1, y1, x2, y2) in self._controls.items():
             hot = self._hover == name
             if hot:
-                draw_rounded_rect(c, x1, y1, x2, y2, 7, CONTROL_BG)
+                draw_rounded_rect(c, x1, y1, x2, y2, u(7), CONTROL_BG)
             colour = ACCENT_HOT if hot else ACCENT
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
 
             if name == "source":
                 if self.device_kind == "loopback":
                     # a screen, meaning "what this computer is playing"
-                    c.create_rectangle(cx - 7, cy - 5, cx + 7, cy + 4,
-                                       outline=colour, width=1.6)
-                    c.create_line(cx - 4, cy + 7, cx + 4, cy + 7,
-                                  fill=colour, width=1.6)
-                    c.create_line(cx, cy + 4, cx, cy + 7, fill=colour, width=1.6)
+                    c.create_rectangle(cx - u(7), cy - u(5), cx + u(7), cy + u(4),
+                                       outline=colour, width=u(1.6))
+                    c.create_line(cx - u(4), cy + u(7), cx + u(4), cy + u(7),
+                                  fill=colour, width=u(1.6))
+                    c.create_line(cx, cy + u(4), cx, cy + u(7),
+                                  fill=colour, width=u(1.6))
                 else:
                     # a microphone, meaning "the room"
-                    c.create_oval(cx - 3, cy - 8, cx + 3, cy + 1,
-                                  outline=colour, width=1.6)
-                    c.create_arc(cx - 6, cy - 4, cx + 6, cy + 6,
+                    c.create_oval(cx - u(3), cy - u(8), cx + u(3), cy + u(1),
+                                  outline=colour, width=u(1.6))
+                    c.create_arc(cx - u(6), cy - u(4), cx + u(6), cy + u(6),
                                  start=200, extent=140, style=tk.ARC,
-                                 outline=colour, width=1.6)
-                    c.create_line(cx, cy + 5, cx, cy + 8, fill=colour, width=1.6)
+                                 outline=colour, width=u(1.6))
+                    c.create_line(cx, cy + u(5), cx, cy + u(8),
+                                  fill=colour, width=u(1.6))
             elif name == "listen":
                 if self.paused:
                     # Record: a filled dot, red so it reads as "arm capture"
                     dot = RECORD_HOT if hot else RECORD_COLOR
-                    c.create_oval(cx - 6, cy - 6, cx + 6, cy + 6,
+                    c.create_oval(cx - u(6), cy - u(6), cx + u(6), cy + u(6),
                                   fill=dot, outline=dot)
                 else:
                     # Stop: the square that pairs with a record dot
-                    c.create_rectangle(cx - 5, cy - 5, cx + 5, cy + 5,
+                    c.create_rectangle(cx - u(5), cy - u(5), cx + u(5), cy + u(5),
                                        fill=colour, outline=colour)
             elif name == "menu":
-                for dy in (-5, 0, 5):
+                for dy in (u(-5), 0, u(5)):
                     c.create_line(
-                        cx - 6, cy + dy, cx + 6, cy + dy,
-                        fill=colour, width=1.8,
+                        cx - u(6), cy + dy, cx + u(6), cy + dy,
+                        fill=colour, width=u(1.8),
                     )
             elif name == "close":
-                c.create_line(cx - 5, cy - 5, cx + 5, cy + 5, fill=colour, width=1.8)
-                c.create_line(cx + 5, cy - 5, cx - 5, cy + 5, fill=colour, width=1.8)
+                c.create_line(cx - u(5), cy - u(5), cx + u(5), cy + u(5),
+                              fill=colour, width=u(1.8))
+                c.create_line(cx + u(5), cy - u(5), cx - u(5), cy + u(5),
+                              fill=colour, width=u(1.8))
 
     def draw_waves(self, w, h):
         """Concentric arcs radiating from a dot, like a broadcast symbol."""
         c = self.canvas
         self._wave_items = []
-        ox, oy = 26, h / 2                      # origin of the waves
-        c.create_oval(ox - 4, oy - 4, ox + 4, oy + 4,
+        ox, oy = px(26), h / 2                  # origin of the waves
+        c.create_oval(ox - px(4), oy - px(4), ox + px(4), oy + px(4),
                       fill=WAVE_IDLE, outline="", tags="wavedot")
 
         # Translation direction, as a small chip under the meter. This is the
@@ -2496,29 +2601,31 @@ class FloatingTranslator:
         # "Input: English" status text, which said the same thing twice.
         label = self.direction_label()
         item = c.create_text(
-            ox - 8, h - 12, text=label, anchor="w",
+            ox - px(8), h - BORDER_INSET - px(5), text=label, anchor="sw",
             font=(self.cjk_font, 8), fill=ACCENT_HOT, tags="direction",
         )
         box = c.bbox(item)
         if box:
             hot = self._hover == "chip"
-            draw_rounded_rect(c, box[0] - 6, box[1] - 3, box[2] + 6, box[3] + 3,
-                              8, CONTROL_HOT if hot else CONTROL_BG)
+            draw_rounded_rect(c, box[0] - px(6), box[1] - px(3),
+                              box[2] + px(6), box[3] + px(3),
+                              px(8), CONTROL_HOT if hot else CONTROL_BG)
             c.tag_raise(item)
             c.itemconfig(item, fill=TEXT_COLOR if hot else ACCENT_HOT)
             # clickable: the languages are the setting people change most
-            self._chip_box = (box[0] - 6, box[1] - 3, box[2] + 6, box[3] + 3)
+            self._chip_box = (box[0] - px(6), box[1] - px(3),
+                              box[2] + px(6), box[3] + px(3))
         else:
             self._chip_box = None
 
-        span = min(h / 2 - 8, 26)
+        span = min(h / 2 - px(8), px(26))
         for i in range(WAVE_RINGS):
-            r = 11 + i * max(6, span / WAVE_RINGS)
+            r = px(11) + i * max(px(6), span / WAVE_RINGS)
             self._wave_items.append(
                 c.create_arc(
                     ox - r, oy - r, ox + r, oy + r,
                     start=-52, extent=104, style=tk.ARC,
-                    outline=WAVE_IDLE, width=2.4, tags="wave",
+                    outline=WAVE_IDLE, width=px(2.4), tags="wave",
                 )
             )
 
