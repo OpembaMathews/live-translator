@@ -1,15 +1,22 @@
-"""Qt rebuild of the floating caption widget, as a like-for-like comparison.
+"""Qt build of the caption widget, following the suggested pill design.
 
-This is a UI prototype, not a port of the app. It reproduces the main window
-exactly - same palette, same geometry, same behaviours - so the two can be
-judged side by side. No audio, no translation: a synthetic level drives the
-meter so the animation can be seen, and set_level() is where the real capture
-thread would push into.
+The layout comes from the mockup: a stadium panel with a soft glow, a circular
+level gauge on the left holding the source glyph, a LISTENING -> TRANSLATING
+status row, the heard line above the translated line, and a control cluster
+behind a divider.
 
-The point of the exercise is the three things the caption widget needs that a
-settings panel does not: frameless with no OS chrome, always on top of a
-presentation, and a translucent rounded panel that can sit over a bright
-slide without a hard rectangular edge.
+No component was dropped on the way across. The mockup's three right-hand
+slots carry the app's own controls, and the listen toggle moved onto the gauge
+where the mockup put the microphone:
+
+    gauge (click)   start / stop listening, and the input level meter
+    source          microphone or system audio, glyph changes with it
+    gear            settings
+    close           quit
+
+Still a UI prototype: no audio and no translation. A synthetic level drives the
+gauge, and set_level() / set_lines() / set_busy() are where the capture and
+recognition threads would push into.
 
 Run:  python qt_prototype.py
 """
@@ -19,62 +26,62 @@ import sys
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QElapsedTimer
 from PySide6.QtGui import (
     QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen, QBrush,
-    QGuiApplication,
+    QGuiApplication, QLinearGradient,
 )
 from PySide6.QtWidgets import QApplication, QWidget
 
 # ---------------------------------------------------------------------------
-# Palette, copied from translation.py rather than imported: importing that
-# module pulls in speech_recognition and the engines, which this does not need.
+# Palette. Carried over from the app, with the mockup's two accents added:
+# cyan for anything to do with hearing, violet for anything to do with
+# translating, so the two halves of the pipeline stay visually separate.
 # ---------------------------------------------------------------------------
-PANEL_BG = "#0D1B2A"
-TEXT_COLOR = "#FAFCFF"
-CAPTION_SHADOW = "#04090F"
-RECORD_COLOR = "#E8564F"
-RECORD_HOT = "#FF7B74"
-ACCENT = "#5C7A99"
-ACCENT_HOT = "#9EC1E8"
-CONTROL_BG = "#16293D"
-CONTROL_HOT = "#22405E"
-NOTICE_COLOR = "#6E8CAB"
-WAVE_IDLE = "#26405C"
-WAVE_PEAK = "#63D2FF"
-LOADER_TRACK = "#1B3149"
-LOADER_FILL = "#63D2FF"
+PANEL_BG = "#101A26"
+PANEL_EDGE = "#26384C"
+INNER_BG = "#1B2A3C"
 
-# Geometry in logical units. Qt scales these to the display itself, so unlike
-# the Tk version there is no px() helper and no scale factor to thread through.
+TEXT_COLOR = "#FAFCFF"
+TRANS_COLOR = "#A9D8F2"
+NOTICE_COLOR = "#6E8CAB"
+
+HEAR = "#38BDF8"          # listening accent
+HEAR_DIM = "#1B394F"
+HEAR_TEXT = "#7DD3FC"
+TRANSLATE = "#A78BFA"     # translating accent
+TRANSLATE_DIM = "#2A2450"
+TRANSLATE_TEXT = "#C4B5FD"
+
+RING_TRACK = "#223449"
+RING_A = "#22D3EE"        # gauge gradient, low end
+RING_B = "#3B82F6"        # gauge gradient, high end
+GLOW = "#38BDF8"
+
+ACCENT = "#7E99B5"
+ACCENT_HOT = "#D8E8F7"
+CONTROL_HOT = "#22405E"
+RECORD_COLOR = "#F87171"
+
+# Geometry in logical units. Qt scales these to the display itself, so there
+# is no px() helper and no scale factor threaded through the drawing code.
 SIZE_PRESETS = {
-    "Small": (620, 78, 18),
-    "Medium": (900, 112, 26),
-    "Large": (1240, 162, 36),
+    "Small": (780, 118, 17),
+    "Medium": (1000, 148, 21),
+    "Large": (1300, 188, 27),
 }
 DEFAULT_PRESET = "Medium"
-MIN_WIDTH, MIN_HEIGHT = 320, 60
+MIN_WIDTH, MIN_HEIGHT = 520, 96
 
-# Matches the Tk build, where the Windows compositor rounded the window
-# with a ~9 physical px radius. Here it is ours to set, in logical units.
-PANEL_RADIUS = 7.2
-BORDER_INSET = 2.5
-BORDER_WIDTH = 2.0
-BORDER_SEGMENTS = 96
-BORDER_SPEED = 0.42
-BORDER_IDLE = 0.10
+GLOW_PAD = 26          # window margin the glow is painted into
+GLOW_RINGS = 18
+GLOW_ALPHA = 52        # alpha of the innermost glow ring, at full level
 
-EDGE_PAD = 18
-GRIP_ZONE = 20
+GAUGE_GAP = 64         # degrees of track left open at the bottom
+GRIP_ZONE = 22
 CONTROL_SIZE = 30
-CONTROL_GAP = 3
-WAVE_ZONE = 78
-WAVE_RINGS = 4
-NOTICE_PAD = 7
+CONTROL_GAP = 8
+PILL_H = 30
+BAR_COUNT = 5
 
-LOADER_WIDTH_FRAC = 0.46
-LOADER_SEG_FRAC = 0.32
-LOADER_THICKNESS = 3
-LOADER_SPEED = 0.55
-
-FPS = 60          # Tk ran at 25; Qt repaints cheaply enough to ask for more
+FPS = 60
 
 
 def c(name, alpha=255):
@@ -85,45 +92,40 @@ def c(name, alpha=255):
 
 def blend(a, b, t):
     ca, cb = QColor(a), QColor(b)
-    return QColor(
-        round(ca.red() + (cb.red() - ca.red()) * t),
-        round(ca.green() + (cb.green() - ca.green()) * t),
-        round(ca.blue() + (cb.blue() - ca.blue()) * t),
-    )
+    t = max(0.0, min(1.0, t))
+    return QColor(round(ca.red() + (cb.red() - ca.red()) * t),
+                  round(ca.green() + (cb.green() - ca.green()) * t),
+                  round(ca.blue() + (cb.blue() - ca.blue()) * t))
 
 
 class CaptionWindow(QWidget):
     def __init__(self):
         super().__init__()
-        # Frameless, above everything, and absent from the taskbar and from
-        # alt-tab. Qt.Tool is what keeps it out of both.
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
         )
-        # The panel paints its own rounded shape, so the window itself must be
-        # transparent. This is the part Tk could not do: there the corners came
-        # from the Windows compositor because a colour key cannot antialias.
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setMouseTracking(True)
         self.setWindowTitle("Live Translator")
 
-        self._text = "Listening - System default"
+        self._heard = "Hello, how are you?"
+        self._translated = "你好，你好嗎？"
         self._notice = ""
+        self._listening = True
         self._busy = False
-        self._paused = False
-        self._level = 0.0        # smoothed, 0..1
+        self._level = 0.0
         self._level_raw = 0.0
         self._phase = 0.0
+        self._bars = [0.2] * BAR_COUNT
         self._size_name = DEFAULT_PRESET
         self._font_size = SIZE_PRESETS[DEFAULT_PRESET][2]
         self._device_kind = "mic"
-        self._direction = "AUTO"
 
         self._hover = None
         self._controls = {}
-        self._chip_rect = QRectF()
+        self._gauge = QRectF()
         self._drag_from = None
         self._resize_from = None
 
@@ -132,25 +134,28 @@ class CaptionWindow(QWidget):
         self._last = 0.0
 
         self.apply_preset(DEFAULT_PRESET)
-
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(int(1000 / FPS))
 
-    # -- public surface the capture thread would drive ---------------------
+    # -- the surface the app's threads would drive -------------------------
     def set_level(self, value):
         self._level_raw = max(0.0, min(1.0, value))
 
-    def set_text(self, text):
-        self._text = text
-        self.update()
-
-    def set_notice(self, text):
-        self._notice = text
+    def set_lines(self, heard, translated):
+        self._heard, self._translated = heard, translated
         self.update()
 
     def set_busy(self, busy):
         self._busy = busy
+        self.update()
+
+    def set_listening(self, on):
+        self._listening = on
+        self.update()
+
+    def set_notice(self, text):
+        self._notice = text
         self.update()
 
     # -- geometry ----------------------------------------------------------
@@ -159,46 +164,41 @@ class CaptionWindow(QWidget):
         self._size_name = name
         self._font_size = font_size
         screen = QGuiApplication.primaryScreen().availableGeometry()
-        x = screen.x() + (screen.width() - w) // 2
-        y = screen.y() + int(screen.height() * 0.82)
-        self.setGeometry(x, y, w, h)
+        x = screen.x() + (screen.width() - (w + GLOW_PAD * 2)) // 2
+        y = screen.y() + int(screen.height() * 0.78)
+        self.setGeometry(x, y, w + GLOW_PAD * 2, h + GLOW_PAD * 2)
 
-    def caption_font(self):
-        f = QFont("Segoe UI", self._font_size)
+    def panel_rect(self):
+        """The pill itself. The window is larger so the glow has room."""
+        return QRectF(self.rect()).adjusted(GLOW_PAD, GLOW_PAD,
+                                            -GLOW_PAD, -GLOW_PAD)
+
+    def stadium(self, rect):
+        path = QPainterPath()
+        r = rect.height() / 2
+        path.addRoundedRect(rect, r, r)
+        return path
+
+    def heard_font(self):
+        f = QFont()
+        f.setFamilies(["Segoe UI", "Microsoft JhengHei UI"])
+        f.setPointSizeF(self._font_size)
         f.setBold(True)
         return f
 
-    def notice_font(self):
-        return QFont("Segoe UI", max(9, int(self._font_size * 0.42)))
+    def translated_font(self):
+        f = QFont()
+        f.setFamilies(["Microsoft JhengHei UI", "Segoe UI"])
+        f.setPointSizeF(self._font_size * 0.92)
+        return f
 
-    def notice_strip(self):
-        if not self._notice:
-            return 0.0
-        return QFontMetricsF(self.notice_font()).height() + NOTICE_PAD
-
-    def panel_path(self):
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        path = QPainterPath()
-        path.addRoundedRect(r, PANEL_RADIUS, PANEL_RADIUS)
-        return path
-
-    def border_path(self):
-        d = BORDER_INSET
-        r = QRectF(self.rect()).adjusted(d, d, -d, -d)
-        path = QPainterPath()
-        path.addRoundedRect(r, PANEL_RADIUS - d, PANEL_RADIUS - d)
-        return path
-
-    def layout_controls(self):
-        names = ["source", "listen", "menu", "close"]
-        total = len(names) * CONTROL_SIZE + (len(names) - 1) * CONTROL_GAP
-        x = self.width() - EDGE_PAD / 2 - total
-        y = (self.height() - CONTROL_SIZE) / 2
-        self._controls = {}
-        for name in names:
-            self._controls[name] = QRectF(x, y, CONTROL_SIZE, CONTROL_SIZE)
-            x += CONTROL_SIZE + CONTROL_GAP
-        return self.width() - EDGE_PAD / 2 - total - 6
+    def label_font(self):
+        f = QFont()
+        f.setFamilies(["Segoe UI"])
+        f.setPointSizeF(max(8.0, self._font_size * 0.44))
+        f.setBold(True)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.1)
+        return f
 
     # -- animation ---------------------------------------------------------
     def _tick(self):
@@ -206,14 +206,22 @@ class CaptionWindow(QWidget):
         dt = min(0.1, now - self._last)
         self._last = now
 
-        # Synthetic input so the meter and border can be judged without audio.
-        # Speech-shaped: bursts with gaps, not a smooth sine.
-        env = max(0.0, math.sin(now * 0.9) * 0.75 + math.sin(now * 5.3) * 0.25)
-        self.set_level(env if env > 0.12 else 0.0)
+        if self._listening:
+            # Synthetic input so the gauge can be judged without audio.
+            # Speech-shaped: bursts with gaps, not a smooth sine.
+            env = max(0.0, math.sin(now * 0.9) * 0.75
+                      + math.sin(now * 5.3) * 0.25)
+            self.set_level(env if env > 0.12 else 0.0)
+        else:
+            self.set_level(0.0)
 
-        # Ease towards the newest reading so the rings glide rather than snap
         self._level += (self._level_raw - self._level) * min(1.0, dt * 9.0)
         self._phase = (self._phase + dt) % 1000.0
+
+        for i in range(BAR_COUNT):
+            target = self._level * (0.45 + 0.55 * abs(
+                math.sin(now * (4.0 + i * 1.7) + i)))
+            self._bars[i] += (target - self._bars[i]) * min(1.0, dt * 14.0)
         self.update()
 
     # -- painting ----------------------------------------------------------
@@ -222,210 +230,349 @@ class CaptionWindow(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
-        # The panel. One antialiased rounded rect: no compositor involved, so
-        # the corners are ours to size and the shape is the same on Windows 10.
-        p.setPen(Qt.PenStyle.NoPen)
+        panel = self.panel_rect()
+        self.draw_glow(p, panel)
+
+        p.setPen(QPen(c(PANEL_EDGE), 1.0))
         p.setBrush(QBrush(c(PANEL_BG)))
-        p.drawPath(self.panel_path())
+        p.drawPath(self.stadium(panel))
 
-        self.draw_border(p)
-        controls_left = self.layout_controls()
-
-        text_left, text_right = WAVE_ZONE, controls_left
-        body_h = self.height() - self.notice_strip()
-
-        if self._busy:
-            self.draw_loader(p, text_left, text_right, body_h / 2)
-        else:
-            self.draw_caption(p, text_left, text_right, body_h)
-
-        self.draw_notice(p, text_left, text_right)
-        self.draw_waves(p)
-        self.draw_controls(p)
-        self.draw_grip(p)
+        gauge_right = self.draw_gauge(p, panel)
+        controls_left = self.draw_controls(p, panel)
+        self.draw_content(p, panel, gauge_right, controls_left)
+        self.draw_grip(p, panel)
         p.end()
 
-    def draw_border(self, p):
-        """Segments lit by a wave travelling around the perimeter.
+    def draw_glow(self, p, panel):
+        """Soft halo, brightening with the input level.
 
-        Qt hands us the outline as a path we can sample by percentage, so the
-        corners come out evenly spaced for free. In Tk this needed a
-        hand-rolled arc walker and still had to be tuned by eye.
+        Concentric stadium outlines with falling alpha. This is the border
+        animation the Tk build had, moved outside the panel where the mockup
+        put it, and it only works because the window has per-pixel alpha.
         """
-        path = self.border_path()
-        level = self._level
-        if level <= 0.001:
-            return
-        head = (self._phase * BORDER_SPEED) % 1.0
-        pen = QPen()
-        pen.setWidthF(BORDER_WIDTH)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        for i in range(BORDER_SEGMENTS):
-            t0 = i / BORDER_SEGMENTS
-            t1 = (i + 1) / BORDER_SEGMENTS
-            d = (t0 - head) % 1.0
-            lit = math.exp(-(d * 6.0) ** 2) * level
-            amount = max(BORDER_IDLE * level, lit)
-            if amount < 0.02:
+        strength = 0.35 + 0.65 * self._level
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(GLOW_RINGS, 0, -1):
+            spread = i * (GLOW_PAD / GLOW_RINGS)
+            fade = (1.0 - i / GLOW_RINGS) ** 2.2
+            alpha = int(GLOW_ALPHA * fade * strength)
+            if alpha < 2:
                 continue
-            pen.setColor(blend(PANEL_BG, WAVE_PEAK, min(1.0, amount)))
+            pen = QPen(c(GLOW, alpha))
+            pen.setWidthF(2.2)
             p.setPen(pen)
-            p.drawLine(path.pointAtPercent(t0), path.pointAtPercent(t1))
+            p.drawPath(self.stadium(panel.adjusted(-spread, -spread,
+                                                   spread, spread)))
 
-    def draw_caption(self, p, left, right, body_h):
-        rect = QRectF(left, 0, right - left, body_h)
-        font = self.caption_font()
-        p.setFont(font)
-        flags = int(Qt.AlignmentFlag.AlignCenter) | int(Qt.TextFlag.TextWordWrap)
-        # A soft shadow a pixel down gives the glyphs an edge over a bright slide
-        p.setPen(c(CAPTION_SHADOW))
-        p.drawText(rect.translated(1, 2), flags, self._text)
-        p.setPen(c(TEXT_COLOR))
-        p.drawText(rect, flags, self._text)
+    def draw_gauge(self, p, panel):
+        """Circular level meter with the source glyph in the middle.
 
-    def draw_loader(self, p, left, right, cy):
-        span = (right - left) * LOADER_WIDTH_FRAC
-        x1 = (left + right) / 2 - span / 2
-        pen = QPen(c(LOADER_TRACK))
-        pen.setWidthF(LOADER_THICKNESS)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(pen)
-        p.drawLine(QPointF(x1, cy), QPointF(x1 + span, cy))
+        Replaces the radio-wave arcs. Same job, same input, and clicking it
+        is the listen toggle the mockup implies by putting a mic here.
+        """
+        d = panel.height() - 22
+        box = QRectF(panel.left() + 11, panel.top() + 11, d, d)
+        self._gauge = box
+        cx, cy = box.center().x(), box.center().y()
+        r = d / 2
 
-        seg = span * LOADER_SEG_FRAC
-        travel = (self._phase * LOADER_SPEED) % 1.0
-        sx = x1 + travel * (span - seg)
-        pen.setColor(c(LOADER_FILL))
-        p.setPen(pen)
-        p.drawLine(QPointF(sx, cy), QPointF(sx + seg, cy))
+        span = 360 - GAUGE_GAP
+        start = 250 - GAUGE_GAP / 2       # gap sits low and to the left
 
-    def draw_notice(self, p, left, right):
-        if not self._notice:
-            return
-        strip = self.notice_strip()
-        rect = QRectF(left, self.height() - strip - BORDER_INSET,
-                      right - left, strip)
-        p.setFont(self.notice_font())
-        p.setPen(c(NOTICE_COLOR))
-        p.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), self._notice)
-
-    def draw_waves(self, p):
-        ox, oy = 26.0, self.height() / 2.0
-        lit = self._level
-
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(blend(WAVE_IDLE, WAVE_PEAK, lit)))
-        p.drawEllipse(QPointF(ox, oy), 4, 4)
-
-        span = min(self.height() / 2 - 8, 26)
-        pen = QPen()
-        pen.setWidthF(2.4)
+        thick = r * 0.17
+        track = QRectF(box).adjusted(thick, thick, -thick, -thick)
+        pen = QPen(c(RING_TRACK))
+        pen.setWidthF(thick)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        for i in range(WAVE_RINGS):
-            r = 11 + i * max(6, span / WAVE_RINGS)
-            # Each ring answers to a slice of the range, so the meter reads
-            # like a level rather than all lighting at once
-            share = max(0.0, min(1.0, lit * WAVE_RINGS - i))
-            pen.setColor(blend(WAVE_IDLE, WAVE_PEAK, share))
+        p.setPen(pen)
+        p.drawArc(track, int(-start * 16), int(-span * 16))
+
+        lit = self._level if self._listening else 0.0
+        if lit > 0.01:
+            # Halo first, then the arc on top, so the ring reads as emitting
+            # light rather than just being a brighter line.
+            for spread, alpha in ((3.2, 26), (1.8, 46)):
+                halo = QPen(c(GLOW, alpha))
+                halo.setWidthF(thick + spread * 2)
+                halo.setCapStyle(Qt.PenCapStyle.RoundCap)
+                p.setPen(halo)
+                p.drawArc(track, int(-start * 16), int(-span * lit * 16))
+            grad = QLinearGradient(track.bottomLeft(), track.topRight())
+            grad.setColorAt(0.0, c(RING_A))
+            grad.setColorAt(1.0, c(RING_B))
+            pen = QPen(QBrush(grad), thick)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             p.setPen(pen)
-            box = QRectF(ox - r, oy - r, r * 2, r * 2)
-            p.drawArc(box, int(-52 * 16), int(104 * 16))
+            p.drawArc(track, int(-start * 16), int(-span * lit * 16))
 
-        # Direction chip, anchored to the bottom edge
-        p.setFont(QFont("Segoe UI", 8))
-        fm = QFontMetricsF(p.font())
-        tw = fm.horizontalAdvance(self._direction)
-        th = fm.height()
-        chip = QRectF(ox - 8 - 6, self.height() - BORDER_INSET - 5 - th - 3,
-                      tw + 12, th + 6)
-        self._chip_rect = chip
-        hot = self._hover == "chip"
+        # inner disc
+        inner = r * 0.62
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(c(CONTROL_HOT if hot else CONTROL_BG)))
-        p.drawRoundedRect(chip, chip.height() / 2, chip.height() / 2)
-        p.setPen(c(TEXT_COLOR if hot else ACCENT_HOT))
-        p.drawText(chip, int(Qt.AlignmentFlag.AlignCenter), self._direction)
+        p.setBrush(QBrush(c(INNER_BG)))
+        p.drawEllipse(QPointF(cx, cy), inner, inner)
 
-    def draw_controls(self, p):
-        for name, box in self._controls.items():
+        glyph = c(TEXT_COLOR) if self._listening else c(RECORD_COLOR)
+        if self._hover == "gauge":
+            glyph = c(ACCENT_HOT)
+        s = inner / 13.0                   # glyph scale, from the inner disc
+        self.draw_source_glyph(p, cx, cy, s, glyph)
+        return box.right()
+
+    def draw_source_glyph(self, p, cx, cy, s, colour):
+        """Microphone or monitor, drawn to the same optical weight.
+
+        One routine so the gauge and the small control button cannot drift
+        apart; s is the only thing that differs between them.
+        """
+        pen = QPen(colour)
+        pen.setWidthF(max(1.3, s * 1.15))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        if self._device_kind == "loopback":
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(cx - s * 7, cy - s * 6, s * 14, s * 9.5),
+                              s * 1.4, s * 1.4)
+            p.drawLine(QPointF(cx - s * 4, cy + s * 8),
+                       QPointF(cx + s * 4, cy + s * 8))
+            p.drawLine(QPointF(cx, cy + s * 3.5), QPointF(cx, cy + s * 8))
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(colour))
+            p.drawRoundedRect(QRectF(cx - s * 2.6, cy - s * 8, s * 5.2, s * 10),
+                              s * 2.6, s * 2.6)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            # cradle: starts level with the capsule so the two read as one mark
+            p.drawArc(QRectF(cx - s * 5, cy - s * 3.4, s * 10, s * 8),
+                      int(195 * 16), int(150 * 16))
+            p.drawLine(QPointF(cx, cy + s * 4.6), QPointF(cx, cy + s * 7.6))
+
+    def draw_content(self, p, panel, left, right):
+        x = left + panel.height() * 0.18
+        w = right - x
+        if w < 80:
+            return
+        top = panel.top() + panel.height() * 0.14
+
+        pill_bottom = self.draw_status_row(p, x, top, w)
+
+        gap = panel.height() * 0.04
+        lead = panel.height() * 0.02      # air between the two lines
+        remaining = panel.bottom() - pill_bottom - gap
+        fm_h = QFontMetricsF(self.heard_font()).height()
+        fm_t = QFontMetricsF(self.translated_font()).height()
+        block = fm_h + lead + fm_t
+        y = (pill_bottom + gap + max(0.0, (remaining - block) / 2)
+             - panel.height() * 0.04)
+
+        p.setFont(self.heard_font())
+        p.setPen(c(TEXT_COLOR))
+        p.drawText(QRectF(x, y, w, fm_h),
+                   int(Qt.AlignmentFlag.AlignVCenter
+                       | Qt.AlignmentFlag.AlignHCenter),
+                   self._heard)
+
+        p.setFont(self.translated_font())
+        p.setPen(c(TRANS_COLOR))
+        p.drawText(QRectF(x, y + fm_h + lead, w, fm_t),
+                   int(Qt.AlignmentFlag.AlignVCenter
+                       | Qt.AlignmentFlag.AlignHCenter),
+                   self._translated)
+
+    def draw_status_row(self, p, x, y, content_w):
+        """LISTENING -> TRANSLATING, centred over the text block."""
+        font = self.label_font()
+        fm = QFontMetricsF(font)
+        h = max(PILL_H, fm.height() + 10)
+
+        hear_on = self._listening
+        trans_on = self._busy
+        hear_text = self._notice.upper() if self._notice else "LISTENING..."
+        hear_w = fm.horizontalAdvance(hear_text) + h * 1.9
+        trans_w = fm.horizontalAdvance("TRANSLATING...") + h * 1.9
+        arrow_w = h * 1.5
+        total = hear_w + arrow_w + trans_w
+        sx = x + max(0.0, (content_w - total) / 2)
+
+        p.setFont(font)
+        bx = sx
+        self.draw_pill(p, bx, y, hear_w, h, hear_text, HEAR, HEAR_DIM,
+                       HEAR_TEXT, hear_on, icon="wave")
+        bx += hear_w
+
+        p.setPen(QPen(c(ACCENT if not trans_on else TRANSLATE_TEXT), 1.4))
+        ay = y + h / 2
+        p.drawLine(QPointF(bx + arrow_w * 0.30, ay),
+                   QPointF(bx + arrow_w * 0.70, ay))
+        p.drawLine(QPointF(bx + arrow_w * 0.70, ay),
+                   QPointF(bx + arrow_w * 0.55, ay - 4))
+        p.drawLine(QPointF(bx + arrow_w * 0.70, ay),
+                   QPointF(bx + arrow_w * 0.55, ay + 4))
+        bx += arrow_w
+
+        self.draw_pill(p, bx, y, trans_w, h, "TRANSLATING...", TRANSLATE,
+                       TRANSLATE_DIM, TRANSLATE_TEXT, trans_on, icon="lang")
+        return y + h
+
+    def draw_pill(self, p, x, y, w, h, text, accent, dim, text_col, on,
+                  icon):
+        label = p.font()          # the icon routines set fonts of their own
+        box = QRectF(x, y, w, h)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(blend(PANEL_BG, dim, 1.0 if on else 0.55)))
+        p.drawRoundedRect(box, h / 2, h / 2)
+
+        ix = x + h * 0.64
+        iy = y + h / 2
+        col = QColor(accent) if on else blend(PANEL_BG, accent, 0.60)
+        if icon == "wave":
+            self.draw_bars(p, ix, iy, h, col, on)
+        else:
+            self.draw_lang_glyph(p, ix, iy, h, col)
+
+        p.setFont(label)
+        p.setPen(QColor(text_col) if on else blend(PANEL_BG, text_col, 0.62))
+        p.drawText(QRectF(x + h * 1.25, y, w - h * 1.5, h),
+                   int(Qt.AlignmentFlag.AlignVCenter
+                       | Qt.AlignmentFlag.AlignLeft), text)
+        return box
+
+    def draw_bars(self, p, cx, cy, h, colour, live):
+        """Five bars that ride the input level, the listening pill's icon."""
+        bw = h * 0.075
+        gap = bw * 1.7
+        span = h * 0.42
+        pen = QPen(colour)
+        pen.setWidthF(bw)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        start = cx - (BAR_COUNT - 1) * gap / 2
+        for i in range(BAR_COUNT):
+            amp = self._bars[i] if live else 0.12
+            hh = span * (0.22 + 0.78 * max(0.08, amp))
+            bx = start + i * gap
+            p.drawLine(QPointF(bx, cy - hh / 2), QPointF(bx, cy + hh / 2))
+
+    def draw_lang_glyph(self, p, cx, cy, h, colour):
+        """The translate mark: a CJK glyph with a Latin A tucked under it."""
+        p.setPen(colour)
+        f = QFont()
+        f.setFamilies(["Microsoft JhengHei UI", "Segoe UI"])
+        f.setPointSizeF(h * 0.30)
+        p.setFont(f)
+        p.drawText(QRectF(cx - h * 0.36, cy - h * 0.40, h * 0.52, h * 0.60),
+                   int(Qt.AlignmentFlag.AlignCenter), "文")
+        f2 = QFont()
+        f2.setFamilies(["Segoe UI"])
+        f2.setPointSizeF(h * 0.22)
+        f2.setBold(True)
+        p.setFont(f2)
+        p.drawText(QRectF(cx - h * 0.05, cy - h * 0.06, h * 0.44, h * 0.46),
+                   int(Qt.AlignmentFlag.AlignCenter), "A")
+
+    def draw_controls(self, p, panel):
+        names = ["source", "gear", "close"]
+        total = len(names) * CONTROL_SIZE + (len(names) - 1) * CONTROL_GAP
+        right = panel.right() - panel.height() * 0.42
+        x = right - total
+        y = panel.center().y() - CONTROL_SIZE / 2
+
+        # divider, as in the mockup
+        p.setPen(QPen(c("#33485F"), 1.2))
+        dx = x - panel.height() * 0.16
+        p.drawLine(QPointF(dx, panel.center().y() - panel.height() * 0.20),
+                   QPointF(dx, panel.center().y() + panel.height() * 0.20))
+
+        self._controls = {}
+        for name in names:
+            box = QRectF(x, y, CONTROL_SIZE, CONTROL_SIZE)
+            self._controls[name] = box
             hot = self._hover == name
             if hot:
                 p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(QBrush(c(CONTROL_BG)))
-                p.drawRoundedRect(box, 7, 7)
+                p.setBrush(QBrush(c(CONTROL_HOT)))
+                p.drawEllipse(box)
             colour = c(ACCENT_HOT if hot else ACCENT)
-            cx, cy = box.center().x(), box.center().y()
-            pen = QPen(colour)
-            pen.setWidthF(1.6)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            self.draw_icon(p, name, box.center(), colour)
+            x += CONTROL_SIZE + CONTROL_GAP
+
+        return dx - panel.height() * 0.10
+
+    def draw_icon(self, p, name, centre, colour):
+        cx, cy = centre.x(), centre.y()
+        pen = QPen(colour)
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        if name == "gear":
+            # Solid silhouette with the hole punched in the backdrop colour.
+            # Stroked teeth at this size just read as a sun.
+            hole = c(CONTROL_HOT) if self._hover == name else c(PANEL_BG)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(colour))
+            p.save()
+            p.translate(cx, cy)
+            for i in range(8):
+                p.save()
+                p.rotate(i * 45)
+                p.drawRoundedRect(QRectF(-1.7, -8.6, 3.4, 4.6), 1.0, 1.0)
+                p.restore()
+            p.drawEllipse(QPointF(0, 0), 6.0, 6.0)
+            p.setBrush(QBrush(hole))
+            p.drawEllipse(QPointF(0, 0), 2.5, 2.5)
+            p.restore()
+        elif name == "close":
+            pen.setWidthF(1.8)
             p.setPen(pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLine(QPointF(cx - 5.5, cy - 5.5), QPointF(cx + 5.5, cy + 5.5))
+            p.drawLine(QPointF(cx + 5.5, cy - 5.5), QPointF(cx - 5.5, cy + 5.5))
+        elif name == "source":
+            self.draw_source_glyph(p, cx, cy, 1.15, colour)
 
-            if name == "source":
-                if self._device_kind == "loopback":
-                    p.drawRect(QRectF(cx - 7, cy - 5, 14, 9))
-                    p.drawLine(QPointF(cx - 4, cy + 7), QPointF(cx + 4, cy + 7))
-                    p.drawLine(QPointF(cx, cy + 4), QPointF(cx, cy + 7))
-                else:
-                    p.drawRoundedRect(QRectF(cx - 3, cy - 8, 6, 9), 3, 3)
-                    p.drawArc(QRectF(cx - 6, cy - 4, 12, 10),
-                              int(200 * 16), int(140 * 16))
-                    p.drawLine(QPointF(cx, cy + 5), QPointF(cx, cy + 8))
-            elif name == "listen":
-                p.setPen(Qt.PenStyle.NoPen)
-                if self._paused:
-                    dot = c(RECORD_HOT if hot else RECORD_COLOR)
-                    p.setBrush(QBrush(dot))
-                    p.drawEllipse(QPointF(cx, cy), 6, 6)
-                else:
-                    p.setBrush(QBrush(colour))
-                    p.drawRect(QRectF(cx - 5, cy - 5, 10, 10))
-            elif name == "menu":
-                pen.setWidthF(1.8)
-                p.setPen(pen)
-                for dy in (-5, 0, 5):
-                    p.drawLine(QPointF(cx - 6, cy + dy), QPointF(cx + 6, cy + dy))
-            elif name == "close":
-                pen.setWidthF(1.8)
-                p.setPen(pen)
-                p.drawLine(QPointF(cx - 5, cy - 5), QPointF(cx + 5, cy + 5))
-                p.drawLine(QPointF(cx + 5, cy - 5), QPointF(cx - 5, cy + 5))
-
-    def draw_grip(self, p):
+    def draw_grip(self, p, panel):
         colour = c(ACCENT_HOT if self._hover == "grip" else ACCENT)
         pen = QPen(colour)
         pen.setWidthF(1.6)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
-        w, h = self.width(), self.height()
-        for off in (4, 9):
-            p.drawLine(QPointF(w - off - 3, h - 4), QPointF(w - 4, h - off - 3))
+        # tucked inside the right cap, on its diagonal
+        bx = panel.right() - panel.height() * 0.26
+        by = panel.bottom() - panel.height() * 0.16
+        for off in (0, 4.5):
+            p.drawLine(QPointF(bx - 5 + off, by),
+                       QPointF(bx + 1, by - 6 + off))
 
     # -- interaction -------------------------------------------------------
     def _hit(self, pos):
-        if (pos.x() >= self.width() - GRIP_ZONE
-                and pos.y() >= self.height() - GRIP_ZONE):
+        panel = self.panel_rect()
+        grip = QRectF(panel.right() - GRIP_ZONE, panel.bottom() - GRIP_ZONE,
+                      GRIP_ZONE, GRIP_ZONE)
+        if grip.contains(pos):
             return "grip"
         for name, box in self._controls.items():
             if box.contains(pos):
                 return name
-        if self._chip_rect.contains(pos):
-            return "chip"
+        if self._gauge.contains(pos):
+            return "gauge"
+        if not panel.contains(pos):
+            return "outside"
         return None
 
     def mouseMoveEvent(self, event):
-        pos = event.position()
         if self._resize_from is not None:
-            start_pos, sw, sh = self._resize_from
-            d = event.globalPosition() - start_pos
-            self.resize(max(MIN_WIDTH, int(sw + d.x())),
-                        max(MIN_HEIGHT, int(sh + d.y())))
+            start, sw, sh = self._resize_from
+            d = event.globalPosition() - start
+            self.resize(max(MIN_WIDTH + GLOW_PAD * 2, int(sw + d.x())),
+                        max(MIN_HEIGHT + GLOW_PAD * 2, int(sh + d.y())))
             return
         if self._drag_from is not None:
             self.move((event.globalPosition() - self._drag_from).toPoint())
             return
-        was, self._hover = self._hover, self._hit(pos)
+        was, self._hover = self._hover, self._hit(event.position())
         if was != self._hover:
             self.setCursor(Qt.CursorShape.SizeFDiagCursor
                            if self._hover == "grip"
@@ -441,25 +588,20 @@ class CaptionWindow(QWidget):
                                  self.width(), self.height())
         elif target == "close":
             self.close()
-        elif target == "listen":
-            self._paused = not self._paused
-            self._text = ("Paused" if self._paused
-                          else "Listening - System default")
+        elif target == "gauge":
+            self._listening = not self._listening
             self.update()
         elif target == "source":
             self._device_kind = ("loopback" if self._device_kind == "mic"
                                  else "mic")
             self.update()
-        elif target == "menu":
+        elif target == "gear":
+            # stands in for opening the settings window
             self._busy = not self._busy
             self.update()
-        elif target == "chip":
-            order = ["AUTO", "EN -> 中文", "中文 -> EN", "SW -> EN"]
-            i = order.index(self._direction) if self._direction in order else 0
-            self._direction = order[(i + 1) % len(order)]
-            self.update()
-        else:
-            self._drag_from = event.globalPosition() - self.frameGeometry().topLeft()
+        elif target != "outside":
+            self._drag_from = (event.globalPosition()
+                               - self.frameGeometry().topLeft())
 
     def mouseReleaseEvent(self, _event):
         self._drag_from = None
@@ -467,8 +609,8 @@ class CaptionWindow(QWidget):
 
     def mouseDoubleClickEvent(self, _event):
         order = list(SIZE_PRESETS)
-        i = order.index(self._size_name)
-        self.apply_preset(order[(i + 1) % len(order)])
+        self.apply_preset(order[(order.index(self._size_name) + 1)
+                                % len(order)])
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -478,14 +620,27 @@ class CaptionWindow(QWidget):
 def main():
     app = QApplication(sys.argv)
     w = CaptionWindow()
-    w.set_notice("Qt prototype - drag to move, corner to resize, "
-                 "double-click to cycle size")
     w.show()
 
-    if "--demo-states" in sys.argv:
-        QTimer.singleShot(3000, lambda: w.set_busy(True))
-        QTimer.singleShot(6000, lambda: (w.set_busy(False),
-                                         w.set_text("今天的會議將討論下一季的預算")))
+    if "--demo" in sys.argv:
+        lines = [
+            ("Hello, how are you?", "你好，你好嗎？"),
+            ("The meeting starts at three.", "會議三點開始。"),
+            ("Habari ya asubuhi, karibu sana.", "Good morning, you are welcome."),
+        ]
+        state = {"i": 0}
+
+        def cycle():
+            w.set_busy(True)
+            QTimer.singleShot(900, lambda: (
+                w.set_busy(False),
+                w.set_lines(*lines[state["i"] % len(lines)]),
+                state.__setitem__("i", state["i"] + 1)))
+        QTimer.singleShot(1500, cycle)
+        t = QTimer(w)
+        t.timeout.connect(cycle)
+        t.start(4000)
+
     sys.exit(app.exec())
 
 
