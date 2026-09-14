@@ -1,24 +1,18 @@
-"""Qt build of the caption widget, following the suggested pill design.
+"""The caption window, in Qt: the pill design from the mockup.
 
-The layout comes from the mockup: a stadium panel with a soft glow, a circular
-level gauge on the left holding the source glyph, a LISTENING -> TRANSLATING
-status row, the heard line above the translated line, and a control cluster
-behind a divider.
+A view and nothing else. It paints what it is told and reports clicks to a
+controller; qt_app.py supplies the real one, backed by the capture and
+translation engine in translation.py.
 
-No component was dropped on the way across. The mockup's three right-hand
-slots carry the app's own controls, and the listen toggle moved onto the gauge
-where the mockup put the microphone:
+The mockup has three control slots and the app has four things to do, so the
+listen toggle sits on the gauge where the mockup put the microphone:
 
     gauge (click)   start / stop listening, and the input level meter
     source          microphone or system audio, glyph changes with it
     gear            settings
     close           quit
 
-Still a UI prototype: no audio and no translation. A synthetic level drives the
-gauge, and set_level() / set_lines() / set_busy() are where the capture and
-recognition threads would push into.
-
-Run:  python qt_prototype.py
+Run this file directly for a self-contained demo with a synthetic level.
 """
 import math
 import sys
@@ -99,8 +93,16 @@ def blend(a, b, t):
 
 
 class CaptionWindow(QWidget):
-    def __init__(self):
+    """Paints the pill. Every click is forwarded to `controller`.
+
+    The controller only has to answer the five methods named in _act(); with
+    none supplied the window drives itself, which is what the demo uses.
+    """
+
+    def __init__(self, controller=None, demo=False):
         super().__init__()
+        self.controller = controller
+        self.demo = demo
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -206,13 +208,12 @@ class CaptionWindow(QWidget):
         dt = min(0.1, now - self._last)
         self._last = now
 
-        if self._listening:
-            # Synthetic input so the gauge can be judged without audio.
-            # Speech-shaped: bursts with gaps, not a smooth sine.
+        if self.demo:
+            # Speech-shaped synthetic input: bursts with gaps, not a sine.
             env = max(0.0, math.sin(now * 0.9) * 0.75
                       + math.sin(now * 5.3) * 0.25)
-            self.set_level(env if env > 0.12 else 0.0)
-        else:
+            self.set_level(env if self._listening and env > 0.12 else 0.0)
+        elif not self._listening:
             self.set_level(0.0)
 
         self._level += (self._level_raw - self._level) * min(1.0, dt * 9.0)
@@ -586,22 +587,31 @@ class CaptionWindow(QWidget):
         if target == "grip":
             self._resize_from = (event.globalPosition(),
                                  self.width(), self.height())
-        elif target == "close":
-            self.close()
-        elif target == "gauge":
-            self._listening = not self._listening
-            self.update()
-        elif target == "source":
-            self._device_kind = ("loopback" if self._device_kind == "mic"
-                                 else "mic")
-            self.update()
-        elif target == "gear":
-            # stands in for opening the settings window
-            self._busy = not self._busy
-            self.update()
+        elif target in ("close", "gauge", "source", "gear"):
+            self._act(target, event.globalPosition())
         elif target != "outside":
             self._drag_from = (event.globalPosition()
                                - self.frameGeometry().topLeft())
+
+    def _act(self, target, global_pos):
+        """Ask the controller, or fall back to local state for the demo."""
+        ctl = self.controller
+        if ctl is not None:
+            {"close": ctl.close,
+             "gauge": ctl.toggle_listening,
+             "source": ctl.toggle_source,
+             "gear": lambda: ctl.open_settings(global_pos)}[target]()
+            return
+        if target == "close":
+            self.close()
+        elif target == "gauge":
+            self._listening = not self._listening
+        elif target == "source":
+            self._device_kind = ("loopback" if self._device_kind == "mic"
+                                 else "mic")
+        elif target == "gear":
+            self._busy = not self._busy
+        self.update()
 
     def mouseReleaseEvent(self, _event):
         self._drag_from = None
@@ -609,20 +619,36 @@ class CaptionWindow(QWidget):
 
     def mouseDoubleClickEvent(self, _event):
         order = list(SIZE_PRESETS)
-        self.apply_preset(order[(order.index(self._size_name) + 1)
-                                % len(order)])
+        name = order[(order.index(self._size_name) + 1) % len(order)]
+        if self.controller is not None:
+            self.controller.set_size(name)
+        else:
+            self.apply_preset(name)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
-            self.close()
+            if self.controller is not None:
+                self.controller.close()
+            else:
+                self.close()
+
+    # -- state the controller pushes in ------------------------------------
+    def set_device_kind(self, kind):
+        self._device_kind = kind
+        self.update()
+
+    def set_size(self, name):
+        if name in SIZE_PRESETS:
+            self.apply_preset(name)
 
 
 def main():
+    """Standalone demo. The real app lives in qt_app.py."""
     app = QApplication(sys.argv)
-    w = CaptionWindow()
+    w = CaptionWindow(demo=True)
     w.show()
 
-    if "--demo" in sys.argv:
+    if True:
         lines = [
             ("Hello, how are you?", "你好，你好嗎？"),
             ("The meeting starts at three.", "會議三點開始。"),

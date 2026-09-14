@@ -2224,6 +2224,17 @@ def _safe(fn):
 
 class FloatingTranslator:
     def __init__(self, engine_name=ENGINE, input_mode=DEFAULT_INPUT):
+        self.init_state(input_mode)
+        self.build_ui()
+        self.start_engine(engine_name)
+
+    def init_state(self, input_mode=DEFAULT_INPUT):
+        """Everything that is not a window.
+
+        Kept apart from build_ui() so a different front end can inherit the
+        capture and translation half whole. The only thing below this line
+        that touches Tk is run().
+        """
         self.recognizer = sr.Recognizer()
         self.input_mode = input_mode          # "auto", or a fixed language code
         # "auto" means the opposite language; otherwise always show this one.
@@ -2293,7 +2304,10 @@ class FloatingTranslator:
         self._phase = 0.0
         self._listening = False
         self._font_size = SIZE_PRESETS[DEFAULT_PRESET][2]
+        self.panel = None          # settings popover, created on demand
 
+    def build_ui(self):
+        """The Tk window. Overridden wholesale by the Qt front end."""
         self.root = tk.Tk()
         # Needs the root window to exist before it can query installed fonts
         # Both scripts appear, so keep a face for each and choose per message
@@ -2325,11 +2339,10 @@ class FloatingTranslator:
         self.canvas.bind("<Motion>", self.on_hover)
         self.canvas.bind("<ButtonPress-3>", self.show_menu)
         self.root.bind("<Escape>", self._on_escape)
-
-        self.panel = None          # settings popover, created on demand
         self.animate()
 
-        # Model loading can download a file, so keep it off the UI thread
+    def start_engine(self, engine_name=ENGINE):
+        """Model loading can download a file, so keep it off the UI thread."""
         threading.Thread(
             target=self.start_listening, args=(engine_name,), daemon=True
         ).start()
@@ -2755,6 +2768,15 @@ class FloatingTranslator:
         self._busy = False
         self._loader = self._loader_item = None
         self.update_text(text)
+
+    def show_pair(self, heard, translated):
+        """What was heard, and what it became.
+
+        This panel has room for one line, so it shows the translation and the
+        transcript only reaches the log. A front end with two lines overrides
+        this to show both.
+        """
+        self.show_translation(translated)
 
     def show_status(self, text, busy=None):
         """Status and warnings. Before the first translation there is nothing
@@ -3338,7 +3360,7 @@ class FloatingTranslator:
 
             log(f"  translated +{time.time() - heard_at:.2f}s "
                 f"(total {time.time() - captured_at:.2f}s): {translated!r}")
-            self.on_ui(lambda t=translated: self.show_translation(t))
+            self.on_ui(lambda h=text, t=translated: self.show_pair(h, t))
 
     def run(self):
         self.root.mainloop()

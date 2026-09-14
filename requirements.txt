@@ -5,3 +5,6 @@ SpeechRecognition
 PyAudio
 PyAudioWPatch
 numpy
+
+# Only for the Qt front end (qt_app.py). translation.py needs nothing here.
+PySide6-Essentials
