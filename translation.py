@@ -505,6 +505,36 @@ class GeminiSTT:
         pass
 
 
+def ensure_av_or_placeholder():
+    """Let faster-whisper import even when PyAV cannot load.
+
+    faster-whisper imports PyAV at the top of the package, but only calls it
+    to decode audio files. This app always hands Whisper a numpy array, so
+    PyAV is never actually used. Smart App Control has been seen blocking one
+    of PyAV's DLLs, which took the whole speech engine down with it; this
+    swaps in a placeholder so the import succeeds, and the placeholder fails
+    loudly if anything ever does try to decode a file.
+    """
+    if "av" in sys.modules:
+        return
+    try:
+        import av  # noqa: F401
+    except (ImportError, OSError) as e:
+        import types
+
+        log(f"PyAV unavailable ({type(e).__name__}: {e}); "
+            "not needed for live audio, continuing without it")
+
+        def _unavailable(*_a, **_k):
+            raise RuntimeError("PyAV is blocked on this PC, so audio files "
+                               "cannot be decoded; live capture is unaffected")
+
+        stub = types.ModuleType("av")
+        stub.open = _unavailable
+        stub.__getattr__ = lambda name: _unavailable
+        sys.modules["av"] = stub
+
+
 class WhisperSTT:
     """faster-whisper, running on the CPU. Detects the language itself, so a
     single pass covers auto mode - but that detection costs about 0.3s, which
@@ -514,6 +544,7 @@ class WhisperSTT:
 
     def __init__(self, model_size=WHISPER_MODEL, notify=None):
         self.name = f"Local (Whisper {model_size})"
+        ensure_av_or_placeholder()
         from faster_whisper import WhisperModel
 
         options = dict(device="cpu", compute_type="int8",
