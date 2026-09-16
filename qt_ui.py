@@ -69,10 +69,15 @@ GLOW_RINGS = 18
 GLOW_ALPHA = 52        # alpha of the innermost glow ring, at full level
 
 GAUGE_GAP = 64         # degrees of track left open at the bottom
-GRIP_ZONE = 22
+GRIP_ZONE = 30          # clickable square around the resize handle
 CONTROL_SIZE = 30
 CONTROL_GAP = 8
 PILL_H = 30
+# Caption size as a share of the pill's height. 21pt on the 148-unit Medium
+# pill, and the same ratio lands within a point of Small and Large, so the
+# presets look as they did while a dragged size gets text to match.
+CAPTION_RATIO = 21 / 148
+MIN_CAPTION_PT = 9.0
 BAR_COUNT = 5
 
 FPS = 60
@@ -122,7 +127,6 @@ class CaptionWindow(QWidget):
         self._phase = 0.0
         self._bars = [0.2] * BAR_COUNT
         self._size_name = DEFAULT_PRESET
-        self._font_size = SIZE_PRESETS[DEFAULT_PRESET][2]
         self._device_kind = "mic"
 
         self._hover = None
@@ -162,13 +166,28 @@ class CaptionWindow(QWidget):
 
     # -- geometry ----------------------------------------------------------
     def apply_preset(self, name):
-        w, h, font_size = SIZE_PRESETS[name]
+        w, h, _pt = SIZE_PRESETS[name]    # text size now follows the height
         self._size_name = name
-        self._font_size = font_size
-        screen = QGuiApplication.primaryScreen().availableGeometry()
-        x = screen.x() + (screen.width() - (w + GLOW_PAD * 2)) // 2
-        y = screen.y() + int(screen.height() * 0.78)
-        self.setGeometry(x, y, w + GLOW_PAD * 2, h + GLOW_PAD * 2)
+        full_w, full_h = w + GLOW_PAD * 2, h + GLOW_PAD * 2
+        if self.isVisible():
+            # Grow or shrink about the current centre, so a size change does
+            # not throw away where the user dragged the window. Kept on the
+            # screen it is on.
+            # QRect.center() rounds down, which crept the window a pixel up
+            # and left on every change; keep the exact centre instead.
+            g = self.geometry()
+            cx2, cy2 = 2 * g.x() + g.width(), 2 * g.y() + g.height()
+            screen = (self.screen() or QGuiApplication.primaryScreen()
+                      ).availableGeometry()
+            x = (cx2 - full_w) // 2
+            y = (cy2 - full_h) // 2
+            x = max(screen.left(), min(x, screen.right() - full_w))
+            y = max(screen.top(), min(y, screen.bottom() - full_h))
+        else:
+            screen = QGuiApplication.primaryScreen().availableGeometry()
+            x = screen.x() + (screen.width() - full_w) // 2
+            y = screen.y() + int(screen.height() * 0.78)
+        self.setGeometry(x, y, full_w, full_h)
 
     def panel_rect(self):
         """The pill itself. The window is larger so the glow has room."""
@@ -181,26 +200,46 @@ class CaptionWindow(QWidget):
         path.addRoundedRect(rect, r, r)
         return path
 
-    def heard_font(self):
+    def heard_font(self, pt):
         f = QFont()
         f.setFamilies(["Segoe UI", "Microsoft JhengHei UI"])
-        f.setPointSizeF(self._font_size)
+        f.setPointSizeF(pt)
         f.setBold(True)
         return f
 
-    def translated_font(self):
+    def translated_font(self, pt):
         f = QFont()
         f.setFamilies(["Microsoft JhengHei UI", "Segoe UI"])
-        f.setPointSizeF(self._font_size * 0.92)
+        f.setPointSizeF(pt * 0.92)
         return f
 
-    def label_font(self):
+    def label_font(self, pt):
         f = QFont()
         f.setFamilies(["Segoe UI"])
-        f.setPointSizeF(max(8.0, self._font_size * 0.44))
+        f.setPointSizeF(max(8.0, pt * 0.44))
         f.setBold(True)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.1)
         return f
+
+    @staticmethod
+    def fit_line(text, make_font, pt, width):
+        """The font and text to draw one caption line in `width`.
+
+        Shrinks the face first, down to 72% of the size the height allows,
+        because a slightly smaller whole sentence reads better than a cut
+        one. Only past that does it elide.
+        """
+        floor = max(MIN_CAPTION_PT, pt * 0.72)
+        size = pt
+        while True:
+            font = make_font(size)
+            fm = QFontMetricsF(font)
+            if fm.horizontalAdvance(text) <= width or size <= floor:
+                break
+            size = max(floor, size * 0.94)
+        if fm.horizontalAdvance(text) > width:
+            text = fm.elidedText(text, Qt.TextElideMode.ElideRight, width)
+        return font, text
 
     # -- animation ---------------------------------------------------------
     def _tick(self):
@@ -351,49 +390,83 @@ class CaptionWindow(QWidget):
             p.drawLine(QPointF(cx, cy + s * 4.6), QPointF(cx, cy + s * 7.6))
 
     def draw_content(self, p, panel, left, right):
+        """Status row over two caption lines, all sized from the pill.
+
+        Everything here follows the window as it is dragged. The status row
+        drops to icon-only pills when the words do not fit beside the
+        controls, and disappears when the pill is too short to hold it.
+        """
         x = left + panel.height() * 0.18
         w = right - x
         if w < 80:
             return
-        top = panel.top() + panel.height() * 0.14
 
-        pill_bottom = self.draw_status_row(p, x, top, w)
+        pt = max(MIN_CAPTION_PT, panel.height() * CAPTION_RATIO)
+        lead = panel.height() * 0.02
+        row_gap = panel.height() * 0.05
+        budget = panel.height() * 0.86
 
-        gap = panel.height() * 0.04
-        lead = panel.height() * 0.02      # air between the two lines
-        remaining = panel.bottom() - pill_bottom - gap
-        fm_h = QFontMetricsF(self.heard_font()).height()
-        fm_t = QFontMetricsF(self.translated_font()).height()
-        block = fm_h + lead + fm_t
-        y = (pill_bottom + gap + max(0.0, (remaining - block) / 2)
-             - panel.height() * 0.04)
+        # Settle on a caption size whose block, with the row, fits the height
+        while True:
+            row_h = self.status_row_height(pt)
+            show_row = panel.height() >= 104
+            block = (QFontMetricsF(self.heard_font(pt)).height() + lead
+                     + QFontMetricsF(self.translated_font(pt)).height())
+            total = block + ((row_h + row_gap) if show_row else 0)
+            if total <= budget or pt <= MIN_CAPTION_PT:
+                break
+            pt = max(MIN_CAPTION_PT, pt * 0.94)
 
-        p.setFont(self.heard_font())
-        p.setPen(c(TEXT_COLOR))
-        p.drawText(QRectF(x, y, w, fm_h),
-                   int(Qt.AlignmentFlag.AlignVCenter
-                       | Qt.AlignmentFlag.AlignHCenter),
-                   self._heard)
+        y = panel.center().y() - total / 2
+        heard, is_notice = self._heard, False
+        if show_row:
+            compact = not self.draw_status_row(p, x, y, w, pt)
+            y += row_h + row_gap
+            if compact and self._notice:
+                # Icon-only pills have no room for the notice; it borrows the
+                # heard line until it clears.
+                heard, is_notice = self._notice, True
+        elif self._notice:
+            heard, is_notice = self._notice, True
 
-        p.setFont(self.translated_font())
+        font, text = self.fit_line(heard, self.heard_font, pt, w)
+        h1 = QFontMetricsF(font).height()
+        p.setFont(font)
+        p.setPen(c(NOTICE_COLOR if is_notice else TEXT_COLOR))
+        p.drawText(QRectF(x, y, w, h1), int(Qt.AlignmentFlag.AlignCenter), text)
+
+        font, text = self.fit_line(self._translated, self.translated_font,
+                                   pt, w)
+        h2 = QFontMetricsF(font).height()
+        p.setFont(font)
         p.setPen(c(TRANS_COLOR))
-        p.drawText(QRectF(x, y + fm_h + lead, w, fm_t),
-                   int(Qt.AlignmentFlag.AlignVCenter
-                       | Qt.AlignmentFlag.AlignHCenter),
-                   self._translated)
+        p.drawText(QRectF(x, y + h1 + lead, w, h2),
+                   int(Qt.AlignmentFlag.AlignCenter), text)
 
-    def draw_status_row(self, p, x, y, content_w):
-        """LISTENING -> TRANSLATING, centred over the text block."""
-        font = self.label_font()
+    def status_row_height(self, pt):
+        return max(PILL_H, QFontMetricsF(self.label_font(pt)).height() + 10)
+
+    def draw_status_row(self, p, x, y, content_w, pt):
+        """LISTENING -> TRANSLATING, centred over the text block.
+
+        Returns False when it had to fall back to icon-only pills.
+        """
+        font = self.label_font(pt)
         fm = QFontMetricsF(font)
-        h = max(PILL_H, fm.height() + 10)
+        h = self.status_row_height(pt)
 
         hear_on = self._listening
         trans_on = self._busy
         hear_text = self._notice.upper() if self._notice else "LISTENING..."
+        arrow_w = h * 1.5
         hear_w = fm.horizontalAdvance(hear_text) + h * 1.9
         trans_w = fm.horizontalAdvance("TRANSLATING...") + h * 1.9
-        arrow_w = h * 1.5
+        full = hear_w + arrow_w + trans_w <= content_w
+        if not full:
+            hear_w = trans_w = h * 1.4
+            hear_text = trans_text = ""
+        else:
+            trans_text = "TRANSLATING..."
         total = hear_w + arrow_w + trans_w
         sx = x + max(0.0, (content_w - total) / 2)
 
@@ -413,9 +486,9 @@ class CaptionWindow(QWidget):
                    QPointF(bx + arrow_w * 0.55, ay + 4))
         bx += arrow_w
 
-        self.draw_pill(p, bx, y, trans_w, h, "TRANSLATING...", TRANSLATE,
+        self.draw_pill(p, bx, y, trans_w, h, trans_text, TRANSLATE,
                        TRANSLATE_DIM, TRANSLATE_TEXT, trans_on, icon="lang")
-        return y + h
+        return full
 
     def draw_pill(self, p, x, y, w, h, text, accent, dim, text_col, on,
                   icon):
@@ -534,25 +607,39 @@ class CaptionWindow(QWidget):
         elif name == "source":
             self.draw_source_glyph(p, cx, cy, 1.15, colour)
 
+    def grip_rect(self, panel):
+        """Where the resize handle is, for drawing and for clicking alike.
+
+        It sits inside the right cap on its diagonal. The corner of the
+        bounding box would be the obvious spot, but on a pill that corner is
+        outside the shape: nothing visible is there, and the handle that was
+        drawn further in did not overlap it, so resizing could not be found.
+        """
+        cx = panel.right() - panel.height() * 0.26
+        cy = panel.bottom() - panel.height() * 0.19
+        return QRectF(cx - GRIP_ZONE / 2, cy - GRIP_ZONE / 2,
+                      GRIP_ZONE, GRIP_ZONE)
+
     def draw_grip(self, p, panel):
-        colour = c(ACCENT_HOT if self._hover == "grip" else ACCENT)
-        pen = QPen(colour)
-        pen.setWidthF(1.6)
+        hot = self._hover == "grip" or self._resize_from is not None
+        box = self.grip_rect(panel)
+        if hot:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(c(CONTROL_HOT)))
+            p.drawEllipse(box.center(), 11, 11)
+        pen = QPen(c(ACCENT_HOT if hot else ACCENT))
+        pen.setWidthF(1.7)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(pen)
-        # tucked inside the right cap, on its diagonal
-        bx = panel.right() - panel.height() * 0.26
-        by = panel.bottom() - panel.height() * 0.16
+        cx, cy = box.center().x(), box.center().y()
         for off in (0, 4.5):
-            p.drawLine(QPointF(bx - 5 + off, by),
-                       QPointF(bx + 1, by - 6 + off))
+            p.drawLine(QPointF(cx - 4 + off, cy + 3.5),
+                       QPointF(cx + 3.5, cy - 4 + off))
 
     # -- interaction -------------------------------------------------------
     def _hit(self, pos):
         panel = self.panel_rect()
-        grip = QRectF(panel.right() - GRIP_ZONE, panel.bottom() - GRIP_ZONE,
-                      GRIP_ZONE, GRIP_ZONE)
-        if grip.contains(pos):
+        if self.grip_rect(panel).contains(pos):
             return "grip"
         for name, box in self._controls.items():
             if box.contains(pos):
@@ -616,6 +703,7 @@ class CaptionWindow(QWidget):
     def mouseReleaseEvent(self, _event):
         self._drag_from = None
         self._resize_from = None
+        self.update()
 
     def mouseDoubleClickEvent(self, _event):
         order = list(SIZE_PRESETS)
