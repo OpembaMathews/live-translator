@@ -121,6 +121,14 @@ class QtTranslator(core.FloatingTranslator):
         log(f"size -> {name}")
 
     def close(self):
+        # The transcript is written before anything is torn down, so closing
+        # the window is a normal way to end a session rather than losing it.
+        try:
+            saved = self.session.save()
+            if saved:
+                log(f"transcript saved: {saved}")
+        except Exception as e:
+            log(f"could not save the transcript: {e}")
         self.closing = True
         try:
             self._pump.stop()
@@ -216,6 +224,15 @@ class QtTranslator(core.FloatingTranslator):
 
         self.on_ui(apply)
 
+    def open_transcript_folder(self):
+        import os
+        folder = self.session.folder
+        os.makedirs(folder, exist_ok=True)
+        try:
+            os.startfile(folder)        # noqa: S606 - the user asked for it
+        except Exception as e:
+            log(f"could not open the folder: {e}")
+
     # -- settings ----------------------------------------------------------
     def build_menu(self):
         m = QMenu(self.win)
@@ -237,6 +254,11 @@ class QtTranslator(core.FloatingTranslator):
         self._choice_menu(m.addMenu("Size"), SIZE_PRESETS,
                           self._size_name, self.set_size)
         self._opacity_menu(m.addMenu("Opacity"))
+        m.addSeparator()
+        t = m.addAction("Save transcript and open it")
+        t.triggered.connect(lambda: self.save_transcript(True))
+        f = m.addAction("Open the transcript folder")
+        f.triggered.connect(self.open_transcript_folder)
         m.addSeparator()
         act = m.addAction("Quit")
         act.triggered.connect(self.close)
