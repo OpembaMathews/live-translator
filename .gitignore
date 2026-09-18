@@ -10,3 +10,6 @@ __pycache__/
 
 # Scratch
 New Text Document.txt
+
+# Session transcripts are the user's own recordings, not source
+transcripts/
