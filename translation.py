@@ -399,6 +399,14 @@ STREAM_QUIET_FLUSH = 1.0   # silence that ends an utterance and commits the tail
 STREAM_SENTENCE_END = ".!?。！？"
 STREAM_TRIM_AT = 8.0       # cut back to the last committed word past this
 STREAM_SILENCE_PEAK = 0.01  # below this the buffer is silence, not speech
+# Lift by loudness rather than by peak. A quiet mic with one transient in the
+# buffer gets almost no gain from peak scaling: measured on this laptop, peak
+# scaling took speech to 0.03 RMS where Whisper mostly returned nothing.
+STREAM_TARGET_RMS = 0.08
+STREAM_CEILING = 0.95
+STREAM_MIN_FIRST = 2.0     # audio to gather before the first read of a phrase
+STREAM_VOICE_FLOOR = 0.0015   # absolute RMS below which a chunk is not speech
+STREAM_VOICE_OVER_NOISE = 4.0  # ...or this far above the quietest chunk seen
 
 # Live input meter ("radio waves" radiating from a dot on the left)
 WAVE_ZONE = ipx(78)  # horizontal space reserved for the meter
@@ -3391,7 +3399,12 @@ class FloatingTranslator:
         # sentence every time the buffer was cut.
         done = 0
         lang = None
-        last_commit = time.time()
+        # An utterance ends on silence in the audio, not on the recogniser
+        # going quiet. Ending it when no new word was confirmed cut speech
+        # into fragments: a quiet mic makes consecutive reads disagree, so
+        # nothing commits for a second even though the speaker is still going.
+        noise = None
+        last_voice = time.time()
         log(f"  streaming captions: {STREAM_STEP}s steps")
 
         while not self.closing and gen == self.device_gen and not self.paused:
@@ -3407,15 +3420,25 @@ class FloatingTranslator:
                 return
             buf += bytes(chunk)
 
-            samples = self._stream_samples(buf, width)
-            held = len(samples) / rate
+            level = chunk_rms(bytes(chunk), width) / 32768.0
+            noise = level if noise is None else min(noise, level)
+            if level > max(STREAM_VOICE_FLOOR, noise * STREAM_VOICE_OVER_NOISE):
+                last_voice = time.time()
+
+            held = len(buf) / (rate * width)      # seconds of source audio
+            if not said and held < STREAM_MIN_FIRST:
+                # The first read of a phrase decides the language and sets the
+                # prefix everything else agrees against; under a couple of
+                # seconds there is not enough for the model to be right.
+                continue
+            samples = self._stream_samples(buf, rate, width)
             if samples.size and float(abs(samples).max()) < STREAM_SILENCE_PEAK:
                 # Whisper hallucinates on digital silence - a loopback with
                 # nothing playing produced "reverse." out of nothing.
-                if said and time.time() - last_commit >= STREAM_QUIET_FLUSH:
+                if said and time.time() - last_voice >= STREAM_QUIET_FLUSH:
                     self.finish_stream(said, lang)
                     buf, base, prev, said, lang = b"", 0.0, [], [], None
-                    done, last_commit = 0, time.time()
+                    done, last_voice = 0, time.time()
                 else:
                     buf, prev, done = b"", [], 0
                     base += held
@@ -3447,14 +3470,13 @@ class FloatingTranslator:
                 done = agree
             if fresh:
                 said.extend((w, e + base) for w, e in fresh)
-                last_commit = time.time()
                 self.emit_stream(said, words[agree:], lang)
 
             # An utterance ends when nothing new has been confirmed for a
             # while: commit whatever is left, translate it properly, and start
             # the next one clean. Continuous speech confirms words about once
             # a second, so this only fires on a real stop.
-            ended = (said and time.time() - last_commit >= STREAM_QUIET_FLUSH)
+            ended = (said and time.time() - last_voice >= STREAM_QUIET_FLUSH)
             if ended or held >= STREAM_MAX_BUFFER:
                 # The tail goes in unconfirmed, past the same guard: without it
                 # a half-heard "Please stop me at points." was kept and then
@@ -3465,7 +3487,7 @@ class FloatingTranslator:
                 if said:
                     self.finish_stream(said, lang)
                 buf, base, prev, said, lang = b"", 0.0, [], [], None
-                done, last_commit = 0, time.time()
+                done, last_voice = 0, time.time()
                 continue
 
             # Trim the buffer back to the last committed sentence, so the cost
@@ -3483,16 +3505,28 @@ class FloatingTranslator:
                 buf, base, prev, done = buf[drop:], cut, [], 0
 
     @staticmethod
-    def _stream_samples(raw, width):
-        """Bytes -> float32, lifted if the input is quiet, as Whisper needs."""
+    def _stream_samples(raw, rate, width):
+        """Bytes -> 16kHz float32, lifted if the input is quiet.
+
+        Resampling is the whole point: a microphone commonly runs at 44.1kHz,
+        and handing those samples to Whisper as if they were 16kHz stretches
+        speech to nearly three times its length. It hears a drone and returns
+        nothing, which is exactly what happened. The phrase path never hit
+        this because AudioData resamples on the way out.
+        """
         import numpy as np
 
-        dtype = np.int16 if width == 2 else np.uint8
-        samples = np.frombuffer(raw, dtype=dtype).astype(np.float32) / 32768.0
+        data = sr.AudioData(raw, rate, width).get_raw_data(
+            convert_rate=16000, convert_width=2)
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
         if samples.size:
+            rms = float(np.sqrt(np.mean(samples ** 2)))
             peak = float(np.abs(samples).max())
-            if 0.0 < peak < QUIET_PEAK:
-                samples = samples * min(MAX_GAIN, TARGET_PEAK / peak)
+            if rms > 0.0 and rms < STREAM_TARGET_RMS:
+                gain = min(MAX_GAIN, STREAM_TARGET_RMS / rms)
+                if peak > 0.0:
+                    gain = min(gain, STREAM_CEILING / peak)   # no clipping
+                samples = samples * gain
         return samples
 
     def stream_translate(self, heard, lang):
