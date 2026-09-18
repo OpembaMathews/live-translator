@@ -3529,6 +3529,24 @@ class FloatingTranslator:
                 samples = samples * gain
         return samples
 
+    def stream_lang(self, heard, lang):
+        """The language to translate from when detection would not commit.
+
+        Whisper only reports a language it is confident about, and on the
+        short buffers streaming works with it often is not. The utterance was
+        then shown untranslated, which looks like the app ignoring you. The
+        script of what came back settles it well enough: Han characters mean
+        Chinese, anything else means the pivot language.
+        """
+        if lang:
+            return lang
+        if self.input_mode != "auto":
+            return self.input_mode
+        for code, meta in LANGUAGES.items():
+            if meta["script"] == "han" and has_cjk(heard):
+                return code
+        return PIVOT_LANG
+
     def stream_translate(self, heard, lang):
         """Translate sentence by sentence, reusing finished ones.
 
@@ -3538,8 +3556,9 @@ class FloatingTranslator:
         is translated once and then left alone, and only the sentence being
         spoken can still change.
         """
-        target = self.resolve_target(lang) if lang else None
-        self.last_direction = (lang, target or lang) if lang else None
+        lang = self.stream_lang(heard, lang)
+        target = self.resolve_target(lang)
+        self.last_direction = (lang, target or lang)
         if not target:
             return heard
         parts = re.findall(r"[^.!?。！？]*[.!?。！？]|[^.!?。！？]+", heard)
@@ -3573,6 +3592,7 @@ class FloatingTranslator:
         heard = " ".join(w for w, _ in said)
         log(f"  stream utterance [{lang}]: {heard!r}")
         translated = self.stream_translate(heard, lang)
+        log(f"  stream shown: {translated!r}")
         self._stream_done.clear()      # next utterance starts with no history
         self.on_ui(lambda h=heard, t=translated or h: self.show_pair(h, t))
 
