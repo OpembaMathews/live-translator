@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication, QMenu
 import translation as core
 from translation import (
     ENGINE, DEFAULT_INPUT, LANGUAGES, LANG_NAMES, RESPONSE_PRESETS,
-    SENSITIVITY_PRESETS, WHISPER_MODELS, log,
+    SENSITIVITY_PRESETS, WHISPER_MODELS, CAPTURE_MODES, log,
 )
 from qt_ui import CaptionWindow, SIZE_PRESETS
 
@@ -144,6 +144,16 @@ class QtTranslator(core.FloatingTranslator):
         self._text = text
         self.win.set_lines(text, "")
 
+    def show_stream(self, heard, translated, pending=""):
+        """A partial caption while the speaker is still talking."""
+        self._has_translation = True
+        self._notice = ""
+        self._busy = False
+        self._text = translated
+        self.win.set_busy(False)
+        self.win.set_notice("")
+        self.win.set_lines(heard, translated, pending)
+
     def show_pair(self, heard, translated):
         self._has_translation = True
         self._notice = ""
@@ -151,7 +161,7 @@ class QtTranslator(core.FloatingTranslator):
         self._text = translated
         self.win.set_busy(False)
         self.win.set_notice("")
-        self.win.set_lines(heard, translated)
+        self.win.set_lines(heard, translated, "")
 
     def set_notice(self, text):
         self._notice = text
@@ -216,6 +226,8 @@ class QtTranslator(core.FloatingTranslator):
         self._lang_menu(m.addMenu("Speaking"), "input")
         self._lang_menu(m.addMenu("Show me"), "target")
         m.addSeparator()
+        self._choice_menu(m.addMenu("Captions"), CAPTURE_MODES,
+                          self.capture_mode, self.set_capture_mode)
         self._choice_menu(m.addMenu("Response"), RESPONSE_PRESETS,
                           self.response, self.set_response)
         self._choice_menu(m.addMenu("Sensitivity"), SENSITIVITY_PRESETS,

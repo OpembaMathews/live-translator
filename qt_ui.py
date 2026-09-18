@@ -119,6 +119,7 @@ class CaptionWindow(QWidget):
 
         self._heard = "Hello, how are you?"
         self._translated = "你好，你好嗎？"
+        self._pending = ""       # heard but not yet confirmed, drawn dimmed
         self._notice = ""
         self._listening = True
         self._busy = False
@@ -148,8 +149,9 @@ class CaptionWindow(QWidget):
     def set_level(self, value):
         self._level_raw = max(0.0, min(1.0, value))
 
-    def set_lines(self, heard, translated):
+    def set_lines(self, heard, translated, pending=""):
         self._heard, self._translated = heard, translated
+        self._pending = pending
         self.update()
 
     def set_busy(self, busy):
@@ -429,11 +431,33 @@ class CaptionWindow(QWidget):
         elif self._notice:
             heard, is_notice = self._notice, True
 
-        font, text = self.fit_line(heard, self.heard_font, pt, w)
-        h1 = QFontMetricsF(font).height()
+        tail = "" if is_notice else self._pending
+        # The confirmed words get the width first; the unconfirmed tail takes
+        # whatever is left and is dropped before they are. Eliding the pair as
+        # one string cut the tail's end off and lost the dimming with it.
+        font, firm = self.fit_line(heard, self.heard_font, pt, w)
+        fm = QFontMetricsF(font)
+        h1 = fm.height()
         p.setFont(font)
+        space = fm.horizontalAdvance(" ")
+        room = w - fm.horizontalAdvance(firm) - space
+        if tail and room > fm.averageCharWidth() * 4:
+            tail = fm.elidedText(tail, Qt.TextElideMode.ElideRight, room)
+        else:
+            tail = ""
+
+        total = fm.horizontalAdvance(firm + (" " + tail if tail else ""))
+        tx = x + (w - total) / 2
         p.setPen(c(NOTICE_COLOR if is_notice else TEXT_COLOR))
-        p.drawText(QRectF(x, y, w, h1), int(Qt.AlignmentFlag.AlignCenter), text)
+        p.drawText(QRectF(tx, y, fm.horizontalAdvance(firm), h1),
+                   int(Qt.AlignmentFlag.AlignVCenter
+                       | Qt.AlignmentFlag.AlignLeft), firm)
+        if tail:
+            p.setPen(c(NOTICE_COLOR))
+            p.drawText(QRectF(tx + fm.horizontalAdvance(firm + " "), y,
+                              fm.horizontalAdvance(tail), h1),
+                       int(Qt.AlignmentFlag.AlignVCenter
+                           | Qt.AlignmentFlag.AlignLeft), tail)
 
         font, text = self.fit_line(self._translated, self.translated_font,
                                    pt, w)
