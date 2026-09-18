@@ -81,6 +81,12 @@ MIN_CAPTION_PT = 9.0
 BAR_COUNT = 5
 
 FPS = 60
+# The meter rises with the signal but falls back slowly. Speech is bursty, so
+# a symmetric follower drops to nothing in the gaps between syllables and the
+# ring reads as the microphone cutting in and out. Measured on a quiet laptop
+# mic, about half of all chunks sit under a tenth of full scale.
+LEVEL_ATTACK = 0.04        # seconds to rise
+LEVEL_RELEASE = 0.45       # seconds to fall
 
 
 def c(name, alpha=255):
@@ -257,7 +263,8 @@ class CaptionWindow(QWidget):
         elif not self._listening:
             self.set_level(0.0)
 
-        self._level += (self._level_raw - self._level) * min(1.0, dt * 9.0)
+        span = LEVEL_ATTACK if self._level_raw > self._level else LEVEL_RELEASE
+        self._level += (self._level_raw - self._level) * min(1.0, dt / span)
         self._phase = (self._phase + dt) % 1000.0
 
         for i in range(BAR_COUNT):
