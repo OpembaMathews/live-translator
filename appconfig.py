@@ -1,4 +1,4 @@
-"""Small persistent settings store, shared by the app and the installer.
+"""Small persistent settings store for the app.
 
 Only the AI provider settings live here for now. The API key is encrypted with
 Windows DPAPI so it is readable only by the same user on the same machine, and
@@ -14,7 +14,6 @@ import ctypes
 import ctypes.wintypes
 import json
 import os
-import sys
 
 PROVIDERS = ("off", "claude", "gemini")
 DEFAULTS = {
@@ -25,8 +24,6 @@ DEFAULTS = {
 
 
 def _app_dir():
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 

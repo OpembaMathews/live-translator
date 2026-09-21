@@ -254,12 +254,7 @@ def script_matches(code, text):
 
 # Launched from a shortcut we run under pythonw.exe, which has no console, so
 # print() goes nowhere. Everything interesting is appended here instead.
-# In a frozen build __file__ points inside the bundle, so the log would be
-# buried in _internal. Sit next to the executable instead.
-if getattr(sys, "frozen", False):
-    APP_DIR = os.path.dirname(sys.executable)
-else:
-    APP_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(APP_DIR, "translator.log")
 LOG_LOCK = threading.Lock()
 
@@ -271,7 +266,7 @@ for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError, OSError):
-        pass  # frozen windowed builds have no streams to reconfigure
+        pass  # pythonw has no streams to reconfigure
 
 
 def log(message):
@@ -853,7 +848,7 @@ class LeanEngine(Translator):
     """Runs Argos's models directly on CTranslate2, skipping argostranslate.
 
     argostranslate imports stanza for sentence splitting, stanza requires
-    torch, and torch alone is 526MB - about two thirds of a frozen build,
+    torch, and torch alone is 526MB - about two thirds of a packaged app,
     for a feature we do not use. The language packs themselves are plain
     CTranslate2 models with a SentencePiece vocabulary, so they load without
     any of that. Dropping this chain removes roughly 760MB of dependencies.
@@ -875,20 +870,10 @@ class LeanEngine(Translator):
 
     @staticmethod
     def _roots():
-        """Where translation packs may live, most specific first.
-
-        A frozen build ships its own packs so it works on a machine that has
-        never seen argostranslate; a source checkout falls back to whatever
-        argostranslate has installed.
-        """
-        roots = []
-        if getattr(sys, "frozen", False):
-            bundled = pathlib.Path(
-                getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)))
-            roots.append(bundled / "argos")
-        roots.append(pathlib.Path.home() / ".local" / "share"
-                     / "argos-translate" / "packages")
-        return [r for r in roots if r.exists()]
+        """Where translation packs live: argostranslate's own install folder."""
+        root = (pathlib.Path.home() / ".local" / "share"
+                / "argos-translate" / "packages")
+        return [root] if root.exists() else []
 
     @classmethod
     def _discover(cls):
@@ -3835,41 +3820,6 @@ class FloatingTranslator:
         self.root.mainloop()
 
 
-def run_setup():
-    """Prepare everything a first launch would otherwise wait for.
-
-    The installer calls this so the speech model is already on disk before
-    the user ever opens the app. Prints progress and exits.
-    """
-    print("Preparing Live Translator...", flush=True)
-    pairs = translation_pairs()
-    engine = build_engine(ENGINE, pairs)
-    engine.warm_up()
-
-    # Prove the bundled models really translate, rather than merely loading.
-    # This runs at install time, so a broken bundle is caught immediately
-    # instead of the first time someone speaks.
-    checks = [("Good morning everyone.", "en", "zt"),
-              ("大家早上好", "zt", "en"),
-              ("Good morning everyone.", "en", "sw")]
-    for text, src, dst in checks:
-        out = engine.translate(text, src, dst)
-        if not out.strip():
-            raise RuntimeError(f"translation {src}->{dst} returned nothing")
-        print(f"  {src}->{dst}: {text}  ->  {out}", flush=True)
-    print("Translation ready (bundled, no download needed).", flush=True)
-
-    def announce(model_size):
-        size = WHISPER_DOWNLOAD_MB.get(model_size, "")
-        print(f"Downloading speech model ({size} MB). This happens once.",
-              flush=True)
-
-    stt = WhisperSTT(WHISPER_MODELS[DEFAULT_WHISPER], notify=announce)
-    stt.warm_up()
-    print("Speech model ready. Live Translator now works offline.", flush=True)
-    return 0
-
-
 def apply_startup_options(app, argv):
     """--device <text> picks an input by name; --input auto|en|zt sets language."""
     if "--input" in argv:
@@ -3898,8 +3848,6 @@ def apply_startup_options(app, argv):
 
 
 if __name__ == "__main__":
-    if "--setup" in sys.argv:
-        raise SystemExit(run_setup())
     app = FloatingTranslator()
     apply_startup_options(app, sys.argv)
     app.run()

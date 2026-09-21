@@ -1,15 +1,9 @@
-# Build output - regenerate with build.py
-build/
-dist/
-*.spec
-
-# Runtime
+# Runtime output
 translator.log
+settings.json
+transcripts/
 __pycache__/
 *.pyc
 
-# Scratch
-New Text Document.txt
-
-# Session transcripts are the user's own recordings, not source
-transcripts/
+# Research working notes; the finished reports are kept under docs/
+research_notes/
