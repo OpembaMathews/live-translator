@@ -1,13 +1,13 @@
 # How Live Translator works
 
-This is the map of the code: what each file does, how audio becomes a
+This is the map of the code: what each module does, how audio becomes a
 caption, which thread does what, and why the less obvious decisions were made.
 
 ## The pipeline
 
 ```
  microphone or           speech to text        translation          window
- system audio   ──►      Whisper, local   ──►  Argos models    ──►  Qt or Tk
+ system audio   ──►      Whisper, local   ──►  Argos models    ──►  Qt window
                          or Google/Gemini      on CTranslate2,
                                                or Claude/Gemini
                                                       │
@@ -19,35 +19,38 @@ Every stage has a local option, so the app works with no network and no
 account. Cloud services are opt-in replacements for individual stages, never a
 requirement.
 
-## Files
+## The package
 
-| File | Lines | Role |
+Everything is in `livetranslator/`, started with `python -m livetranslator`.
+
+| Module | Lines | Role |
 |---|---|---|
-| `translation.py` | ~3,900 | The engine: capture, recognition, translation, transcripts, settings, and the original Tk window |
-| `qt_app.py` | ~340 | The Qt front end. Inherits the engine and replaces only the window and menu |
-| `qt_ui.py` | ~790 | The Qt caption window itself: painting, layout and input. Knows nothing about audio |
-| `appconfig.py` | ~130 | Reads and writes `settings.json`, encrypting the AI key with Windows DPAPI |
-| `build.py` | ~260 | PyInstaller builds: folder, single file, or installer |
-| `installer.py` | ~340 | The graphical installer: copies files, makes shortcuts, registers with Windows |
+| `config.py` | ~140 | Languages, and every tunable threshold, each with the reason for its value |
+| `paths.py` | ~15 | Where the log, `settings.json` and transcripts are written |
+| `log.py` | ~35 | The log file |
+| `text.py` | ~45 | Which script a text is in, and the other language |
+| `settings.py` | ~120 | Reads and writes `settings.json`, encrypting the AI key with Windows DPAPI |
+| `audio.py` | ~250 | Microphones, system-audio loopback, and the tap that feeds the level meter |
+| `speech.py` | ~290 | Speech to text: `WhisperSTT` locally, `GoogleSTT` and `GeminiSTT` online |
+| `translate.py` | ~240 | `LeanEngine` locally, `ClaudeEngine` and `GeminiEngine` with the user's key |
+| `session.py` | ~120 | `SessionLog`, which writes the transcripts |
+| `engine.py` | ~915 | `LiveTranslator`: the whole app except the window |
+| `ui/app.py` | ~345 | `QtTranslator`: the engine wearing the window, plus the settings menu |
+| `ui/caption.py` | ~790 | The caption window: painting, layout and input. Knows nothing about audio |
+| `ui/ai_dialog.py` | ~130 | The AI key dialog |
 
-### Inside translation.py
-
-| Part | What it is |
-|---|---|
-| `LANGUAGES` | The language registry. Each entry carries its Whisper code, speech tag and script |
-| `WhisperSTT` | Local speech recognition on faster-whisper, CPU, 8-bit |
-| `GoogleSTT`, `GeminiSTT` | Cloud speech recognition alternatives |
-| `LeanEngine` | Local translation: Argos language packs run directly on CTranslate2 |
-| `ClaudeEngine`, `GeminiEngine` | Cloud translation through the user's own key |
-| `SessionLog` | Writes the transcript files |
-| `FloatingTranslator` | The application. Split into `init_state()`, `build_ui()` and `start_engine()` so another window can reuse everything else |
+The dependency runs one way. `engine.py` uses the modules above it and knows
+nothing about Qt; `ui/` uses the engine. `LiveTranslator` leaves a few hooks
+for a front end to override (`build_ui`, `on_ui`, `show_pair`, `show_stream`,
+`show_status`, `run`, `close`), and its defaults only record state, so the
+engine can run with no window at all, which is how it is tested.
 
 ## Why the local translation engine is "lean"
 
 Argos Translate's own library imports stanza for sentence splitting, stanza
 requires torch, and torch alone is about 526 MB. `LeanEngine` loads the same
 Argos model files and drives them through CTranslate2 and SentencePiece
-directly, with identical output. That removed roughly 760 MB from a build and
+directly, with identical output. That removes roughly 760 MB of dependencies and
 sidestepped Smart App Control, which blocks torch on this machine.
 
 A pair without a direct model is routed through English, so Chinese to
@@ -61,9 +64,9 @@ Kiswahili is two hops.
 | Capture | Owns the audio device. Runs `listen_loop()`, which reopens the device whenever the selection changes |
 | Recognition worker | Phrase mode only. Takes captured phrases from a queue, transcribes and translates them |
 
-Worker threads never touch the window directly. In the Tk front end they go
-through `root.after()`. In the Qt front end they emit a queued signal through
-`Bridge`, because Qt widgets are not safe to call from other threads.
+Worker threads never touch the window directly. They call `on_ui()`, which in
+the Qt front end emits a queued signal through `Bridge`, because Qt widgets are
+not safe to call from other threads.
 
 ## Two capture modes
 
@@ -156,12 +159,11 @@ not write.
 
 ## High-DPI displays
 
-The process declares per-monitor DPI awareness before the first window exists.
-Without it Windows draws the window at 96 DPI and stretches the bitmap, which
-blurs every glyph on a 125% display. In the Tk window, pixel geometry goes
-through `px()` while font point sizes are left to Tk, which converts them using
-the real DPI. The Qt window needs neither, since Qt handles the display scale
-itself.
+Qt renders at the display's real resolution itself, so geometry in the window
+code is in logical units and nothing needs scaling by hand. (The retired
+tkinter window had to declare DPI awareness and scale every coordinate, or
+Windows drew it at 96 DPI and stretched the bitmap, blurring every glyph on a
+125% display.)
 
 ## Things that look odd but are deliberate
 

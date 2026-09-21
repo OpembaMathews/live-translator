@@ -69,15 +69,15 @@ add an AI key for translation.
 
 ## Windows blocked the app
 
-Smart App Control blocks unsigned programs, including a built `.exe` from this
-project, and offers no override. Run from source instead, since the Python
-interpreter is signed:
+Smart App Control blocks unsigned programs and offers no override. The app runs
+from source through the signed Python interpreter, which is why it works; use
+the Live Translator shortcut, `run.bat`, or:
 
 ```
-pythonw qt_app.py
+python -m livetranslator
 ```
 
-The lasting fix is code signing, which needs a certificate.
+Sharing the app as a standalone program would need code signing.
 
 ## "PyAV unavailable" in the log
 

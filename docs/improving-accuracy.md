@@ -62,14 +62,14 @@ reconstructs by re-reading a buffer.
 Kiswahili, where the offline models are weakest. It will not fix misheard
 words, so it pays off most once the audio is good.
 
-### What the app has today, and why it cannot be used
+### Why the old Google option was removed
 
-The code already contains a Google Translate engine, but it uses
-`googletrans`, an unofficial library that scrapes Google's website. On this
-machine it fails to import at all, because of an incompatibility with a newer
-version of one of its dependencies. Scraped endpoints also break without
-notice and are not permitted for products. It should be replaced, not
-repaired.
+The app used to contain a Google Translate engine built on `googletrans`, an
+unofficial library that scrapes Google's website. It had stopped importing,
+because of an incompatibility with a newer version of one of its
+dependencies, and scraped endpoints also break without notice and are not
+permitted for products. It was removed; the official API below is the
+replacement.
 
 ### What you need for the official service
 
@@ -125,8 +125,8 @@ normally authenticated with a service account rather than a plain key.
 ## Recommendation
 
 1. **Fix the audio first.** A headset changes more than any service.
-2. **Add Google Cloud Translation** as an engine, replacing the broken
-   `googletrans` one. Small, contained, cheap, and a clear win for Kiswahili.
+2. **Add Google Cloud Translation** as an engine. Small, contained, cheap,
+   and a clear win for Kiswahili.
 3. **Then decide on recognition.** If misheard words remain with good audio,
    compare Whisper `small` in phrase mode against Google Speech-to-Text on the
    same recording, word for word, before committing to either.
