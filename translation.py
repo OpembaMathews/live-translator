@@ -287,6 +287,117 @@ def log(message):
     except OSError:
         pass  # logging must never take the app down
 
+SESSION_DIR = os.path.join(APP_DIR, "transcripts")
+
+
+class SessionLog:
+    """Everything said and shown in one run, written as it happens.
+
+    Two files per session. The .jsonl is appended a line at a time and
+    flushed, so a session survives the app being closed or crashing; the
+    .html is rebuilt from it and is the one to actually read. Nothing is
+    created until the first line is spoken, so launching the app and closing
+    it again leaves no clutter.
+    """
+
+    def __init__(self, folder=SESSION_DIR):
+        self.folder = folder
+        self.started = time.time()
+        self.stamp = time.strftime("%Y-%m-%d %H-%M")
+        self.rows = []
+        self.lock = threading.Lock()
+        self.jsonl = os.path.join(folder, f"session {self.stamp}.jsonl")
+        self.html = os.path.join(folder, f"session {self.stamp}.html")
+        self.note = ""          # device and languages, filled in at start
+
+    def describe(self, note):
+        self.note = note
+
+    def add(self, heard, translated, source, target):
+        """One finished utterance. Safe to call from any thread."""
+        row = {
+            "at": time.strftime("%H:%M:%S"),
+            "seconds": round(time.time() - self.started, 1),
+            "from": source or "",
+            "to": target or "",
+            "heard": heard,
+            "translated": translated,
+        }
+        try:
+            with self.lock:
+                self.rows.append(row)
+                os.makedirs(self.folder, exist_ok=True)
+                with open(self.jsonl, "a", encoding="utf-8") as fh:
+                    fh.write(_json.dumps(row, ensure_ascii=False) + "\n")
+                    fh.flush()
+                first = len(self.rows) == 1
+            if first:
+                log(f"transcript: {self.html}")
+        except OSError as e:
+            log(f"could not write the transcript: {e}")
+
+    def save(self):
+        """Rebuild the readable copy. Returns its path, or None if empty."""
+        with self.lock:
+            rows = list(self.rows)
+        if not rows:
+            return None
+        try:
+            os.makedirs(self.folder, exist_ok=True)
+            with open(self.html, "w", encoding="utf-8") as fh:
+                fh.write(self._render(rows))
+            return self.html
+        except OSError as e:
+            log(f"could not write the transcript: {e}")
+            return None
+
+    def _render(self, rows):
+        def esc(text):
+            return (str(text).replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+
+        body = []
+        for r in rows:
+            pair = f"{LANG_SHORT.get(r['from'], r['from'])}"
+            if r["to"] and r["to"] != r["from"]:
+                pair += f" &rarr; {LANG_SHORT.get(r['to'], r['to'])}"
+            body.append(
+                f"<tr><td class=t>{esc(r['at'])}</td>"
+                f"<td class=d>{pair}</td>"
+                f"<td class=h>{esc(r['heard'])}</td>"
+                f"<td class=x>{esc(r['translated'])}</td></tr>")
+        minutes = (time.time() - self.started) / 60
+        return f"""<!doctype html>
+<meta charset="utf-8">
+<title>Live Translator - {esc(self.stamp)}</title>
+<style>
+ body {{ background:#0D1B2A; color:#E8F0F8; margin:0; padding:32px;
+        font:15px/1.6 "Segoe UI",system-ui,sans-serif; }}
+ h1 {{ font-size:20px; margin:0 0 4px; }}
+ .sub {{ color:#6E8CAB; font-size:13px; margin-bottom:22px; }}
+ table {{ border-collapse:collapse; width:100%; max-width:1100px; }}
+ th {{ text-align:left; font-size:11px; letter-spacing:.08em;
+       text-transform:uppercase; color:#63D2FF; font-weight:600;
+       border-bottom:1px solid #2A3E52; padding:0 12px 8px 0; }}
+ td {{ vertical-align:top; padding:10px 12px 10px 0;
+       border-bottom:1px solid #16293D; }}
+ .t {{ color:#6E8CAB; white-space:nowrap; font-variant-numeric:tabular-nums; }}
+ .d {{ color:#A78BFA; white-space:nowrap; font-size:12px; }}
+ .h {{ color:#FAFCFF; }}
+ .x {{ color:#A9D8F2; }}
+ @media print {{ body {{ background:#fff; color:#000; }}
+                 .h,.x,.t,.d {{ color:#000; }} }}
+</style>
+<h1>Live Translator transcript</h1>
+<div class=sub>{esc(self.stamp)} &middot; {len(rows)} lines &middot;
+ {minutes:.0f} min{(' &middot; ' + esc(self.note)) if self.note else ''}</div>
+<table>
+ <tr><th>Time</th><th></th><th>Heard</th><th>Shown</th></tr>
+ {''.join(body)}
+</table>
+"""
+
+
 # Appearance
 PANEL_BG = "#0D1B2A"      # deep navy
 TEXT_COLOR = "#FAFCFF"    # near-white; the caption is the point of the panel
@@ -381,6 +492,32 @@ DEFAULT_RESPONSE = "Balanced"
 # Cap on phrases waiting to be transcribed. Falling behind is worse than
 # dropping audio for live captions, so the oldest is discarded first.
 MAX_PENDING = 3
+
+# Streaming captions, as an alternative to waiting for a pause.
+#
+# Waiting for silence means a sentence shows nothing until it ends, and a long
+# one is cut at the phrase limit. Instead a rolling buffer is re-read every
+# STREAM_STEP seconds, and a word is only shown once two consecutive reads
+# agree on it. Whisper rewrites the end of a buffer constantly but almost
+# never revises the start, so agreement is what makes an early word safe to
+# show. Measured on a 14.5s clip: median 4.2s behind the speaker with phrase
+# capture, 2.1s with this, and no words lost at phrase boundaries.
+CAPTURE_MODES = ("Phrase", "Streaming")
+DEFAULT_CAPTURE = "Phrase"
+STREAM_STEP = 0.9          # seconds of new audio between reads
+STREAM_MAX_BUFFER = 16.0   # force a flush rather than re-reading forever
+STREAM_QUIET_FLUSH = 1.0   # silence that ends an utterance and commits the tail
+STREAM_SENTENCE_END = ".!?。！？"
+STREAM_TRIM_AT = 8.0       # cut back to the last committed word past this
+STREAM_SILENCE_PEAK = 0.01  # below this the buffer is silence, not speech
+# Lift by loudness rather than by peak. A quiet mic with one transient in the
+# buffer gets almost no gain from peak scaling: measured on this laptop, peak
+# scaling took speech to 0.03 RMS where Whisper mostly returned nothing.
+STREAM_TARGET_RMS = 0.08
+STREAM_CEILING = 0.95
+STREAM_MIN_FIRST = 2.0     # audio to gather before the first read of a phrase
+STREAM_VOICE_FLOOR = 0.0015   # absolute RMS below which a chunk is not speech
+STREAM_VOICE_OVER_NOISE = 4.0  # ...or this far above the quietest chunk seen
 
 # Live input meter ("radio waves" radiating from a dot on the left)
 WAVE_ZONE = ipx(78)  # horizontal space reserved for the meter
@@ -621,6 +758,36 @@ class WhisperSTT:
             raise NoSpeech()
         return detected, text
 
+    def stream_words(self, samples, lang=None):
+        """Words with end times, for the streaming path.
+
+        Takes samples rather than AudioData because the streaming loop owns a
+        rolling buffer and re-reads it; returns the language so the caller can
+        pin it for the rest of the utterance and skip detection next time.
+        """
+        segments, info = self.model.transcribe(
+            samples,
+            beam_size=1,
+            language=LANG_TO_WHISPER.get(lang) if lang else None,
+            condition_on_previous_text=False,
+            word_timestamps=True,
+            vad_filter=True,
+        )
+        words = []
+        for seg in segments:
+            if seg.no_speech_prob > WHISPER_NO_SPEECH_MAX:
+                continue
+            for w in (seg.words or []):
+                text = w.word.strip()
+                if text:
+                    words.append((text, w.end))
+        code = lang
+        if code is None:
+            code = WHISPER_TO_LANG.get(info.language)
+            if code is None or info.language_probability < WHISPER_MIN_LANG_PROB:
+                code = None
+        return code, words
+
     def warm_up(self):
         import numpy as np
 
@@ -779,7 +946,11 @@ class LeanEngine(Translator):
             # decode() leaves the boundary marker on these vocabularies, so
             # join the pieces the way SentencePiece itself would
             joined = "".join(res.hypotheses[0]).replace(self.MARKER, " ")
-            out.append(joined.strip())
+            # The model emits <unk> for a piece it has no word for, which is
+            # common on a garbled transcript. Showing it to an audience is
+            # worse than showing nothing, so it never leaves the engine.
+            joined = joined.replace("<unk>", "")
+            out.append(re.sub(r"\s{2,}", " ", joined).strip())
         return " ".join(x for x in out if x)
 
     def translate(self, text, source, target):
@@ -2305,6 +2476,9 @@ class FloatingTranslator:
         self.paused = False
         self.sensitivity = DEFAULT_SENSITIVITY
         self.response = DEFAULT_RESPONSE
+        self.capture_mode = DEFAULT_CAPTURE
+        self._stream_done = {}     # sentence -> translation, for this utterance
+        self.session = SessionLog()
         self.jobs = queue.Queue(maxsize=MAX_PENDING)
         self.stt_kind = STT_ENGINE
         self.whisper_choice = DEFAULT_WHISPER
@@ -2985,6 +3159,9 @@ class FloatingTranslator:
 
     def close(self):
         self.closing = True
+        saved = self.session.save()
+        if saved:
+            log(f"transcript saved: {saved}")
         if self._wave_job is not None:
             try:
                 self.root.after_cancel(self._wave_job)
@@ -3143,8 +3320,19 @@ class FloatingTranslator:
                         f"(threshold={self.recognizer.energy_threshold:.0f}, "
                         f"meter scale={self._level_scale:.0f})")
                     self.show_status(f"Listening - {self.device_label}")
+                    # Plain text: the note is escaped on the way into the
+                    # page, so an entity here would show as its own source.
+                    self.session.describe(
+                        f"{self.device_label} · "
+                        f"{self.get_stt().name} · {self.capture_mode}")
+                    # Streaming re-reads a buffer, so it needs a recogniser
+                    # that can be called repeatedly and cheaply; the cloud ones
+                    # charge per call and answer too slowly for that.
+                    if (self.capture_mode == "Streaming"
+                            and hasattr(self.get_stt(), "stream_words")):
+                        self.stream_loop(source, gen)
                     # Media is continuous; a microphone has pauses to cut on
-                    if self.device_kind == "loopback":
+                    elif self.device_kind == "loopback":
                         self.capture_continuous(source, gen)
                     else:
                         self.capture(source, gen)
@@ -3313,6 +3501,255 @@ class FloatingTranslator:
                     pass
             self.jobs.put((sr.AudioData(payload, rate, width), time.time()))
 
+    def stream_loop(self, source, gen):
+        """Rolling buffer, re-read every step, committing what two reads agree.
+
+        Recognition runs here rather than on the worker thread: there is no
+        queue to fall behind on, because the buffer itself is the backlog and
+        it is trimmed as words are committed. On this machine a read costs
+        about 0.7s against a 0.9s step.
+        """
+        stt = self.get_stt()
+        rate, width = source.SAMPLE_RATE, source.SAMPLE_WIDTH
+        need = int(rate * STREAM_STEP) * width
+
+        buf = b""              # audio not yet committed
+        base = 0.0             # seconds of speech already trimmed off the front
+        prev = []              # words from the previous read
+        said = []              # committed (word, end) for this utterance
+        # How many of the current buffer's words are already committed. Not
+        # len(said): trimming restarts the buffer's word numbering while said
+        # keeps the whole utterance, and conflating the two dropped a
+        # sentence every time the buffer was cut.
+        done = 0
+        lang = None
+        # An utterance ends on silence in the audio, not on the recogniser
+        # going quiet. Ending it when no new word was confirmed cut speech
+        # into fragments: a quiet mic makes consecutive reads disagree, so
+        # nothing commits for a second even though the speaker is still going.
+        noise = None
+        last_voice = time.time()
+        log(f"  streaming captions: {STREAM_STEP}s steps")
+
+        while not self.closing and gen == self.device_gen and not self.paused:
+            chunk = bytearray()
+            while (len(chunk) < need and not self.closing
+                   and gen == self.device_gen and not self.paused):
+                try:
+                    chunk += source.stream.read(source.CHUNK)
+                except Exception as e:
+                    log(f"  stream read failed: {type(e).__name__}: {e}")
+                    return
+            if not chunk:
+                return
+            buf += bytes(chunk)
+
+            level = chunk_rms(bytes(chunk), width) / 32768.0
+            noise = level if noise is None else min(noise, level)
+            if level > max(STREAM_VOICE_FLOOR, noise * STREAM_VOICE_OVER_NOISE):
+                last_voice = time.time()
+
+            held = len(buf) / (rate * width)      # seconds of source audio
+            if not said and held < STREAM_MIN_FIRST:
+                # The first read of a phrase decides the language and sets the
+                # prefix everything else agrees against; under a couple of
+                # seconds there is not enough for the model to be right.
+                continue
+            samples = self._stream_samples(buf, rate, width)
+            if samples.size and float(abs(samples).max()) < STREAM_SILENCE_PEAK:
+                # Whisper hallucinates on digital silence - a loopback with
+                # nothing playing produced "reverse." out of nothing.
+                if said and time.time() - last_voice >= STREAM_QUIET_FLUSH:
+                    self.finish_stream(said, lang)
+                    buf, base, prev, said, lang = b"", 0.0, [], [], None
+                    done, last_voice = 0, time.time()
+                else:
+                    buf, prev, done = b"", [], 0
+                    base += held
+                continue
+            try:
+                found, words = stt.stream_words(samples, lang)
+            except Exception as e:
+                log(f"  stream recognise failed: {type(e).__name__}: {e}")
+                buf, prev = b"", []
+                continue
+            if found and lang is None:
+                lang = found
+
+            # LocalAgreement: the longest prefix this read shares with the last
+            agree = 0
+            while (agree < min(len(prev), len(words))
+                   and prev[agree][0] == words[agree][0]):
+                agree += 1
+            prev = words
+
+            # Trimming cuts on a word end time, which Whisper places a shade
+            # early, so the tail of that word survives into the next buffer and
+            # was transcribed a second time ("Please stop me at points. Please
+            # stop me at any point"). Anything not past the last commit is
+            # audio we have already read.
+            spoken = said[-1][1] if said else -1.0
+            fresh = [(w, e) for w, e in words[done:agree] if e + base > spoken]
+            if words[done:agree]:
+                done = agree
+            if fresh:
+                said.extend((w, e + base) for w, e in fresh)
+                self.emit_stream(said, words[agree:], lang)
+
+            # An utterance ends when nothing new has been confirmed for a
+            # while: commit whatever is left, translate it properly, and start
+            # the next one clean. Continuous speech confirms words about once
+            # a second, so this only fires on a real stop.
+            ended = (said and time.time() - last_voice >= STREAM_QUIET_FLUSH)
+            if ended or held >= STREAM_MAX_BUFFER:
+                # The tail goes in unconfirmed, past the same guard: without it
+                # a half-heard "Please stop me at points." was kept and then
+                # repeated in full by the final read.
+                spoken = said[-1][1] if said else -1.0
+                said.extend((w, e + base) for w, e in words[agree:]
+                            if e + base > spoken)
+                if said:
+                    self.finish_stream(said, lang)
+                buf, base, prev, said, lang = b"", 0.0, [], [], None
+                done, last_voice = 0, time.time()
+                continue
+
+            # Trim the buffer back to the last committed sentence, so the cost
+            # of a read stays flat however long someone talks.
+            cut = 0.0
+            for w, end in said:
+                if w and w[-1] in STREAM_SENTENCE_END:
+                    cut = end
+            if held > STREAM_TRIM_AT and said:
+                # No sentence has ended and the buffer is getting expensive to
+                # re-read; cut at the last committed word instead.
+                cut = max(cut, said[-1][1])
+            if held - (cut - base) > STREAM_STEP and cut > base:
+                drop = int((cut - base) * rate) * width
+                buf, base, prev, done = buf[drop:], cut, [], 0
+
+    @staticmethod
+    def _stream_samples(raw, rate, width):
+        """Bytes -> 16kHz float32, lifted if the input is quiet.
+
+        Resampling is the whole point: a microphone commonly runs at 44.1kHz,
+        and handing those samples to Whisper as if they were 16kHz stretches
+        speech to nearly three times its length. It hears a drone and returns
+        nothing, which is exactly what happened. The phrase path never hit
+        this because AudioData resamples on the way out.
+        """
+        import numpy as np
+
+        data = sr.AudioData(raw, rate, width).get_raw_data(
+            convert_rate=16000, convert_width=2)
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        if samples.size:
+            rms = float(np.sqrt(np.mean(samples ** 2)))
+            peak = float(np.abs(samples).max())
+            if rms > 0.0 and rms < STREAM_TARGET_RMS:
+                gain = min(MAX_GAIN, STREAM_TARGET_RMS / rms)
+                if peak > 0.0:
+                    gain = min(gain, STREAM_CEILING / peak)   # no clipping
+                samples = samples * gain
+        return samples
+
+    def stream_lang(self, heard, lang):
+        """The language to translate from when detection would not commit.
+
+        Whisper only reports a language it is confident about, and on the
+        short buffers streaming works with it often is not. The utterance was
+        then shown untranslated, which looks like the app ignoring you. The
+        script of what came back settles it well enough: Han characters mean
+        Chinese, anything else means the pivot language.
+        """
+        if lang:
+            return lang
+        if self.input_mode != "auto":
+            return self.input_mode
+        for code, meta in LANGUAGES.items():
+            if meta["script"] == "han" and has_cjk(heard):
+                return code
+        return PIVOT_LANG
+
+    def stream_translate(self, heard, lang):
+        """Translate sentence by sentence, reusing finished ones.
+
+        Re-translating the whole prefix each step made earlier sentences
+        rewrite themselves under the reader ("I want to talk" became "I want
+        to say" became "I want to chat"). Splitting means a finished sentence
+        is translated once and then left alone, and only the sentence being
+        spoken can still change.
+        """
+        lang = self.stream_lang(heard, lang)
+        target = self.resolve_target(lang)
+        self.last_direction = (lang, target or lang)
+        if not target:
+            return heard
+        parts = re.findall(r"[^.!?。！？]*[.!?。！？]|[^.!?。！？]+", heard)
+        out = []
+        for part in parts:
+            chunk = part.strip()
+            if not chunk:
+                continue
+            if chunk in self._stream_done:
+                out.append(self._stream_done[chunk])
+                continue
+            try:
+                done = self.current_translator().translate(chunk, lang, target)
+            except Exception as e:
+                log(f"  stream translate failed: {type(e).__name__}: {e}")
+                return ""
+            if chunk[-1] in STREAM_SENTENCE_END:
+                self._stream_done[chunk] = done      # settled; never redo it
+            out.append(done)
+        return " ".join(x for x in out if x)
+
+    def emit_stream(self, said, pending, lang):
+        """A partial line while the speaker is still going."""
+        heard = " ".join(w for w, _ in said)
+        tail = " ".join(w for w, _ in pending)
+        translated = self.stream_translate(heard, lang)
+        self.on_ui(lambda h=heard, t=translated, p=tail:
+                   self.show_stream(h, t, p))
+
+    def finish_stream(self, said, lang):
+        heard = " ".join(w for w, _ in said)
+        log(f"  stream utterance [{lang}]: {heard!r}")
+        translated = self.stream_translate(heard, lang)
+        log(f"  stream shown: {translated!r}")
+        source = self.stream_lang(heard, lang)
+        self.session.add(heard, translated, source,
+                         self.resolve_target(source))
+        self._stream_done.clear()      # next utterance starts with no history
+        self.on_ui(lambda h=heard, t=translated or h: self.show_pair(h, t))
+
+    def show_stream(self, heard, translated, pending=""):
+        """Partial captions. This panel has one line and no place for the
+        unconfirmed tail, so it shows the translation so far; a front end with
+        two lines overrides this."""
+        self.show_translation(translated or heard)
+
+    def save_transcript(self, open_it=True):
+        """Write the readable copy now, and show it. Safe mid-session."""
+        path = self.session.save()
+        if not path:
+            self.show_status("Nothing transcribed yet")
+            return None
+        log(f"transcript saved: {path}")
+        if open_it:
+            try:
+                os.startfile(path)      # noqa: S606 - the user asked for it
+            except Exception as e:
+                log(f"could not open the transcript: {e}")
+        return path
+
+    def set_capture_mode(self, name):
+        if name not in CAPTURE_MODES:
+            return
+        self.capture_mode = name
+        self.device_gen += 1          # restart capture in the new mode
+        log(f"capture mode -> {name}")
+
     def recognition_worker(self):
         """Consumes captured phrases: transcribe, translate, display."""
         unclear = 0
@@ -3391,6 +3828,7 @@ class FloatingTranslator:
 
             log(f"  translated +{time.time() - heard_at:.2f}s "
                 f"(total {time.time() - captured_at:.2f}s): {translated!r}")
+            self.session.add(text, translated, source_lang, target_lang)
             self.on_ui(lambda h=text, t=translated: self.show_pair(h, t))
 
     def run(self):

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import QApplication, QMenu
 import translation as core
 from translation import (
     ENGINE, DEFAULT_INPUT, LANGUAGES, LANG_NAMES, RESPONSE_PRESETS,
-    SENSITIVITY_PRESETS, WHISPER_MODELS, log,
+    SENSITIVITY_PRESETS, WHISPER_MODELS, CAPTURE_MODES, log,
 )
 from qt_ui import CaptionWindow, SIZE_PRESETS
 
@@ -121,6 +121,14 @@ class QtTranslator(core.FloatingTranslator):
         log(f"size -> {name}")
 
     def close(self):
+        # The transcript is written before anything is torn down, so closing
+        # the window is a normal way to end a session rather than losing it.
+        try:
+            saved = self.session.save()
+            if saved:
+                log(f"transcript saved: {saved}")
+        except Exception as e:
+            log(f"could not save the transcript: {e}")
         self.closing = True
         try:
             self._pump.stop()
@@ -144,6 +152,16 @@ class QtTranslator(core.FloatingTranslator):
         self._text = text
         self.win.set_lines(text, "")
 
+    def show_stream(self, heard, translated, pending=""):
+        """A partial caption while the speaker is still talking."""
+        self._has_translation = True
+        self._notice = ""
+        self._busy = False
+        self._text = translated
+        self.win.set_busy(False)
+        self.win.set_notice("")
+        self.win.set_lines(heard, translated, pending)
+
     def show_pair(self, heard, translated):
         self._has_translation = True
         self._notice = ""
@@ -151,7 +169,7 @@ class QtTranslator(core.FloatingTranslator):
         self._text = translated
         self.win.set_busy(False)
         self.win.set_notice("")
-        self.win.set_lines(heard, translated)
+        self.win.set_lines(heard, translated, "")
 
     def set_notice(self, text):
         self._notice = text
@@ -206,6 +224,15 @@ class QtTranslator(core.FloatingTranslator):
 
         self.on_ui(apply)
 
+    def open_transcript_folder(self):
+        import os
+        folder = self.session.folder
+        os.makedirs(folder, exist_ok=True)
+        try:
+            os.startfile(folder)        # noqa: S606 - the user asked for it
+        except Exception as e:
+            log(f"could not open the folder: {e}")
+
     # -- settings ----------------------------------------------------------
     def build_menu(self):
         m = QMenu(self.win)
@@ -216,6 +243,8 @@ class QtTranslator(core.FloatingTranslator):
         self._lang_menu(m.addMenu("Speaking"), "input")
         self._lang_menu(m.addMenu("Show me"), "target")
         m.addSeparator()
+        self._choice_menu(m.addMenu("Captions"), CAPTURE_MODES,
+                          self.capture_mode, self.set_capture_mode)
         self._choice_menu(m.addMenu("Response"), RESPONSE_PRESETS,
                           self.response, self.set_response)
         self._choice_menu(m.addMenu("Sensitivity"), SENSITIVITY_PRESETS,
@@ -225,6 +254,11 @@ class QtTranslator(core.FloatingTranslator):
         self._choice_menu(m.addMenu("Size"), SIZE_PRESETS,
                           self._size_name, self.set_size)
         self._opacity_menu(m.addMenu("Opacity"))
+        m.addSeparator()
+        t = m.addAction("Save transcript and open it")
+        t.triggered.connect(lambda: self.save_transcript(True))
+        f = m.addAction("Open the transcript folder")
+        f.triggered.connect(self.open_transcript_folder)
         m.addSeparator()
         act = m.addAction("Quit")
         act.triggered.connect(self.close)
