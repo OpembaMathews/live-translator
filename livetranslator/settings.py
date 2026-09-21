@@ -15,6 +15,8 @@ import ctypes.wintypes
 import json
 import os
 
+from .paths import SETTINGS_PATH
+
 PROVIDERS = ("off", "claude", "gemini")
 DEFAULTS = {
     "ai_provider": "off",      # "off" | "claude" | "gemini"
@@ -23,12 +25,8 @@ DEFAULTS = {
 }
 
 
-def _app_dir():
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-def config_path(app_dir=None):
-    return os.path.join(app_dir or _app_dir(), "settings.json")
+def config_path():
+    return SETTINGS_PATH
 
 
 # --- DPAPI: encrypt the key so it is not plain text on disk -----------------
@@ -80,11 +78,11 @@ def decrypt(stored):
 
 
 # --- load / save -----------------------------------------------------------
-def load(app_dir=None):
+def load():
     """Return the settings dict, with the key already decrypted."""
     data = dict(DEFAULTS)
     try:
-        with open(config_path(app_dir), encoding="utf-8") as fh:
+        with open(config_path(), encoding="utf-8") as fh:
             raw = json.load(fh)
         for k in DEFAULTS:
             if k in raw:
@@ -97,9 +95,9 @@ def load(app_dir=None):
     return data
 
 
-def save(provider=None, key=None, covers_speech=None, app_dir=None):
+def save(provider=None, key=None, covers_speech=None):
     """Update whichever fields are given, leave the rest as they are."""
-    current = load(app_dir)
+    current = load()
     if provider is not None:
         current["ai_provider"] = provider if provider in PROVIDERS else "off"
     if key is not None:
@@ -112,10 +110,10 @@ def save(provider=None, key=None, covers_speech=None, app_dir=None):
         "ai_key": encrypt(current["ai_key"]),
         "ai_covers_speech": current["ai_covers_speech"],
     }
-    tmp = config_path(app_dir) + ".tmp"
+    tmp = config_path() + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(on_disk, fh, indent=2)
-    os.replace(tmp, config_path(app_dir))
+    os.replace(tmp, config_path())
     return current
 
 
