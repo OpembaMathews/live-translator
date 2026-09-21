@@ -19,6 +19,7 @@ from translation import (
     ENGINE, DEFAULT_INPUT, LANGUAGES, LANG_NAMES, RESPONSE_PRESETS,
     SENSITIVITY_PRESETS, WHISPER_MODELS, CAPTURE_MODES, log,
 )
+from qt_ai_dialog import AIKeyDialog
 from qt_ui import CaptionWindow, SIZE_PRESETS
 
 
@@ -224,6 +225,16 @@ class QtTranslator(core.FloatingTranslator):
 
         self.on_ui(apply)
 
+    def open_ai_dialog(self):
+        dlg = AIKeyDialog(self.win, self.ai_provider, bool(self.ai_key),
+                          self.ai_covers_speech, self._save_ai)
+        dlg.exec()
+
+    def _save_ai(self, provider, key, covers_speech):
+        # An empty field keeps the saved key, including while switched off,
+        # so turning AI back on later does not mean pasting it again.
+        self.apply_ai_settings(provider, key or self.ai_key, covers_speech)
+
     def open_transcript_folder(self):
         import os
         folder = self.session.folder
@@ -250,6 +261,8 @@ class QtTranslator(core.FloatingTranslator):
         self._choice_menu(m.addMenu("Sensitivity"), SENSITIVITY_PRESETS,
                           self.sensitivity, self.set_sensitivity)
         self._speech_menu(m.addMenu("Speech engine"))
+        ai = m.addAction("AI translation...")
+        ai.triggered.connect(self.open_ai_dialog)
         m.addSeparator()
         self._choice_menu(m.addMenu("Size"), SIZE_PRESETS,
                           self._size_name, self.set_size)
