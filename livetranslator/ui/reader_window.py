@@ -22,8 +22,8 @@ from ..reader.player import Player, passages
 DPI = 130
 PAGE_GAP = 14
 SIDE_MARGIN = 10
-HIGHLIGHT = QColor(56, 189, 248, 54)       # the app's cyan, kept light
-HIGHLIGHT_EDGE = QColor(56, 189, 248, 150)
+HIGHLIGHT = QColor(56, 189, 248, 62)       # the app's cyan, kept light
+HIGHLIGHT_EDGE = QColor(56, 189, 248, 90)
 SPEEDS = ("0.8x", "0.9x", "1.0x", "1.1x", "1.25x", "1.5x")
 
 WINDOW_QSS = """
@@ -46,6 +46,28 @@ QComboBox QAbstractItemView {
     background-color: #142130; color: #DCE8F4; selection-background-color: #22405E;
 }
 """
+
+
+def merge_lines(boxes):
+    """Join boxes that sit on the same line of text.
+
+    A search returns a box per fragment it matched, so a sentence comes back
+    as a row of little boxes. Drawn separately they look like every word is
+    boxed; merged, each line of the sentence gets one highlight.
+    """
+    rows = []
+    for x0, y0, x1, y1 in sorted(boxes, key=lambda b: (round(b[1], 1), b[0])):
+        for row in rows:
+            overlap = min(y1, row[3]) - max(y0, row[1])
+            if overlap > 0.6 * min(y1 - y0, row[3] - row[1]):
+                row[0] = min(row[0], x0)
+                row[1] = min(row[1], y0)
+                row[2] = max(row[2], x1)
+                row[3] = max(row[3], y1)
+                break
+        else:
+            rows.append([x0, y0, x1, y1])
+    return [tuple(r) for r in rows]
 
 
 class PageView(QWidget):
@@ -137,16 +159,29 @@ class PageView(QWidget):
             except Exception:
                 found = []
             if found:
-                return [tuple(r) for r in found]
+                return merge_lines(tuple(r) for r in found)
         return [item.bbox]
 
     def pixmap(self, n):
+        """The page, rendered for this display.
+
+        Qt lays out in logical pixels but paints on a screen that may have
+        more of them. Rendering at the logical size and letting Qt stretch
+        the result is what made the text look pixelated; rendering at
+        scale * devicePixelRatio and telling the pixmap its ratio keeps it
+        as sharp as the PDF itself.
+        """
+        ratio = self.devicePixelRatioF() or 1.0
+        if self._pixmaps.get("ratio") != ratio:
+            self._pixmaps = {"ratio": ratio}
         if n not in self._pixmaps:
-            pix = self.doc[n].get_pixmap(matrix=pymupdf.Matrix(self.scale,
-                                                               self.scale))
+            zoom = self.scale * ratio
+            pix = self.doc[n].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
             image = QImage(pix.samples, pix.width, pix.height, pix.stride,
                            QImage.Format.Format_RGB888)
-            self._pixmaps[n] = QPixmap.fromImage(image.copy())
+            pm = QPixmap.fromImage(image.copy())
+            pm.setDevicePixelRatio(ratio)
+            self._pixmaps[n] = pm
         return self._pixmaps[n]
 
     def paintEvent(self, _event):
@@ -165,7 +200,7 @@ class PageView(QWidget):
             p.setBrush(HIGHLIGHT)
             for box in boxes:
                 p.drawRoundedRect(
-                    self.rect_for(page, box).adjusted(-2, -1, 2, 1), 3, 3)
+                    self.rect_for(page, box).adjusted(-2, -2, 2, 2), 4, 4)
         p.end()
 
     def mousePressEvent(self, event):

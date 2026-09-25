@@ -164,3 +164,19 @@ def test_a_merged_pair_does_not_shift_every_later_word():
     assert words[0].start == 0.0
     assert words[-1].end == pytest.approx(0.9)
     assert words[1].start < words[2].start, "words must stay in order"
+
+
+# --- merging highlight boxes ----------------------------------------------
+def test_boxes_on_one_line_merge_into_one():
+    from livetranslator.ui.reader_window import merge_lines
+    # a search returns a box per fragment; the line should end up as one
+    row = merge_lines([(10, 100, 40, 112), (42, 100, 90, 112),
+                       (92, 101, 130, 113)])
+    assert row == [(10, 100, 130, 113)]
+
+
+def test_separate_lines_stay_separate():
+    from livetranslator.ui.reader_window import merge_lines
+    rows = merge_lines([(10, 100, 90, 112), (10, 120, 60, 132)])
+    assert len(rows) == 2
+    assert rows[0][1] < rows[1][1], "lines keep their order down the page"
