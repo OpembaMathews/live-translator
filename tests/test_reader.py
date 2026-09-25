@@ -260,3 +260,27 @@ def test_a_line_that_appears_once_is_not_treated_as_furniture(tmp_path):
     doc.save(path)
     shapes = document.furniture(document.open_document(str(path)))
     assert not any("closing remark" in s for s in shapes)
+
+
+# --- the window fits the screen it opens on -------------------------------
+def test_the_window_opens_inside_the_usable_screen():
+    """A frameless window is not fitted by Windows, so it fits itself.
+
+    It asked for 980 pixels of height on a screen with 816 usable, which put
+    the transport controls under the taskbar.
+    """
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import ReaderWindow
+
+    window = ReaderWindow(voice_factory=lambda: None)
+    window.show()
+    app.processEvents()
+    usable = QGuiApplication.primaryScreen().availableGeometry()
+    frame = window.frameGeometry()
+    assert frame.height() <= usable.height()
+    assert frame.width() <= usable.width()
+    assert usable.contains(frame), "the window hangs off the screen"
+    window.close()

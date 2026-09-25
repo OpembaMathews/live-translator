@@ -11,7 +11,9 @@ import os
 
 import pymupdf
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import (
+    QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
+)
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
@@ -221,7 +223,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet(chrome.QSS)
-        self.resize(1040, 980)
+        self.setMinimumSize(560, 420)
 
         panel = chrome.Panel()
         panel.setObjectName("panel")
@@ -233,6 +235,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         outer.addWidget(self.build_pages(), 1)
         outer.addLayout(self.build_transport())
         self.setCentralWidget(panel)
+        self.fit_to_screen()
 
         self.follow = QTimer(self)
         self.follow.timeout.connect(self.follow_player)
@@ -380,6 +383,20 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         # loader write to it, so it keeps the name they use.
         self.status = self.left_label
         return column
+
+    def fit_to_screen(self, want=(1040, 980)):
+        """Open at a comfortable size, but never taller than the screen.
+
+        A frameless window is not fitted by Windows, so asking for 980 on a
+        screen with 816 usable pixels put the controls below the taskbar.
+        """
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry()
+        width = min(want[0], int(area.width() * 0.96))
+        height = min(want[1], int(area.height() * 0.96))
+        self.resize(width, height)
+        self.move(area.x() + (area.width() - width) // 2,
+                  area.y() + (area.height() - height) // 2)
 
     # -- the frameless window ---------------------------------------------
     def mousePressEvent(self, event):
