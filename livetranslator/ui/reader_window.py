@@ -7,15 +7,18 @@ spoken is tinted on the page and the view scrolls to keep it visible.
 Pages are rendered once, lazily, and cached. A 12-page paper at 130 dpi is a
 few megabytes; rendering every page up front would stall the open.
 """
+import os
+
 import pymupdf
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-    QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 from ..log import log
+from . import reader_chrome as chrome
 from ..reader import document
 from ..reader.player import Player, passages
 
@@ -26,26 +29,6 @@ HIGHLIGHT = QColor(56, 189, 248, 62)       # the app's cyan, kept light
 HIGHLIGHT_EDGE = QColor(56, 189, 248, 90)
 SPEEDS = ("0.8x", "0.9x", "1.0x", "1.1x", "1.25x", "1.5x")
 
-WINDOW_QSS = """
-QMainWindow, QWidget#body { background-color: #0D1B2A; }
-QScrollArea { border: none; background-color: #0D1B2A; }
-QLabel { color: #DCE8F4; font-size: 10pt; }
-QLabel#status { color: #7E99B5; }
-QPushButton {
-    background-color: #16293D; color: #DCE8F4; border: none;
-    border-radius: 6px; padding: 7px 16px; font-size: 10pt;
-}
-QPushButton:hover { background-color: #22405E; }
-QPushButton#play { background-color: #2E7FA8; color: #FFFFFF; font-weight: 600; }
-QPushButton:disabled { color: #4A6078; background-color: #12212F; }
-QComboBox {
-    background-color: #16293D; color: #DCE8F4; border: none;
-    border-radius: 6px; padding: 6px 10px;
-}
-QComboBox QAbstractItemView {
-    background-color: #142130; color: #DCE8F4; selection-background-color: #22405E;
-}
-"""
 
 
 def merge_lines(boxes):
@@ -220,7 +203,7 @@ class PageView(QWidget):
         self.clicked.emit(page, point)
 
 
-class ReaderWindow(QMainWindow):
+class ReaderWindow(QMainWindow, chrome.Draggable):
     """Open a paper, read it aloud, follow along."""
 
     def __init__(self, voice_factory):
@@ -230,80 +213,204 @@ class ReaderWindow(QMainWindow):
         self.player = None
         self.items = []
         self.doc = None
-        self.setWindowTitle("Read a paper")
-        self.setStyleSheet(WINDOW_QSS)
-        self.resize(900, 940)
+        self.path = ""
+        self._drag_from = None
 
-        body = QWidget()
-        body.setObjectName("body")
-        outer = QVBoxLayout(body)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        self.setWindowTitle("PDF Reader & AI Voice")
+        self.setWindowIcon(chrome.app_icon())
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet(chrome.QSS)
+        self.resize(1040, 980)
 
-        bar = QHBoxLayout()
-        bar.setContentsMargins(14, 10, 14, 10)
-        bar.setSpacing(8)
-        self.open_button = QPushButton("Open a PDF")
-        self.open_button.clicked.connect(self.choose_file)
-        self.play_button = QPushButton("Read")
-        self.play_button.setObjectName("play")
-        self.play_button.setEnabled(False)
-        self.play_button.clicked.connect(self.toggle)
-        self.restart_button = QPushButton("Restart")
-        self.restart_button.setToolTip("Read from the beginning (Home)")
-        self.restart_button.setEnabled(False)
-        self.restart_button.clicked.connect(self.restart)
-        self.back_button = QPushButton("◀")
-        self.back_button.setToolTip("Back one sentence (left arrow)")
-        self.back_button.setEnabled(False)
-        self.back_button.clicked.connect(lambda: self.step(-1))
-        self.forward_button = QPushButton("▶")
-        self.forward_button.setToolTip("Forward one sentence (right arrow)")
-        self.forward_button.setEnabled(False)
-        self.forward_button.clicked.connect(lambda: self.step(1))
-        self.speed = QComboBox()
-        self.speed.addItems(SPEEDS)
-        self.speed.setCurrentText("1.0x")
-        self.speed.currentTextChanged.connect(self.change_speed)
-        self.status = QLabel("Open a paper to begin")
-        self.status.setObjectName("status")
-        bar.addWidget(self.open_button)
-        bar.addWidget(self.play_button)
-        bar.addWidget(self.back_button)
-        bar.addWidget(self.forward_button)
-        bar.addWidget(self.restart_button)
-        bar.addWidget(QLabel("Speed"))
-        bar.addWidget(self.speed)
-        bar.addWidget(self.status, 1)
-        outer.addLayout(bar)
+        panel = chrome.Panel()
+        panel.setObjectName("panel")
+        outer = QVBoxLayout(panel)
+        outer.setContentsMargins(20, 16, 20, 18)
+        outer.setSpacing(14)
+        outer.addLayout(self.build_header())
+        outer.addWidget(self.build_file_card())
+        outer.addWidget(self.build_pages(), 1)
+        outer.addLayout(self.build_transport())
+        self.setCentralWidget(panel)
 
-        self.view = PageView()
-        self.view.clicked.connect(self.jump_to_point)
+        self.follow = QTimer(self)
+        self.follow.timeout.connect(self.follow_player)
+        self.follow.setInterval(80)
         self.fit_timer = QTimer(self)      # resizing fires many events
         self.fit_timer.setSingleShot(True)
         self.fit_timer.setInterval(120)
         self.fit_timer.timeout.connect(self.fit_pages)
+        self._shown = -1
+        self._start_at = 0        # where Read begins, set by a click
+        self._seeking = False
+
+        # Space is what a reader reaches for; the arrows step a sentence.
+        for key, action in (("Space", self.toggle),
+                            ("Left", lambda: self.step(-1)),
+                            ("Right", lambda: self.step(1)),
+                            ("Home", self.restart),
+                            ("Esc", self.close)):
+            QShortcut(QKeySequence(key), self, activated=action)
+
+    # -- the frame ---------------------------------------------------------
+    def build_header(self):
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        badge = QLabel()
+        badge.setPixmap(chrome.app_icon().pixmap(38, 38))
+        row.addWidget(badge)
+
+        words = QVBoxLayout()
+        words.setSpacing(0)
+        title = QLabel("PDF Reader & AI Voice")
+        title.setObjectName("title")
+        subtitle = QLabel("Read. Listen. Learn.")
+        subtitle.setObjectName("subtitle")
+        words.addWidget(title)
+        words.addWidget(subtitle)
+        row.addLayout(words)
+        row.addStretch(1)
+
+        for glyph, tip, action in (("\u2014", "Minimise", self.showMinimized),
+                                   ("\u2715", "Close", self.close)):
+            button = QPushButton(glyph)
+            button.setObjectName("icon")
+            button.setToolTip(tip)
+            button.clicked.connect(action)
+            row.addWidget(button)
+        return row
+
+    def build_file_card(self):
+        frame = chrome.card()
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(12)
+        badge = QLabel("PDF")
+        badge.setObjectName("pdfbadge")
+        row.addWidget(badge)
+
+        words = QVBoxLayout()
+        words.setSpacing(2)
+        self.filename = QLabel("No paper open")
+        self.filename.setObjectName("filename")
+        self.meta = QLabel("Open a PDF to begin")
+        self.meta.setObjectName("meta")
+        words.addWidget(self.filename)
+        words.addWidget(self.meta)
+        row.addLayout(words)
+        row.addStretch(1)
+
+        self.page_pill = QLabel("Page 0 / 0")
+        self.page_pill.setObjectName("pill")
+        row.addWidget(self.page_pill)
+        self.open_button = QPushButton("Open a PDF")
+        self.open_button.clicked.connect(self.choose_file)
+        row.addWidget(self.open_button)
+        return frame
+
+    def build_pages(self):
+        frame = QFrame()
+        frame.setObjectName("paper")
+        inner = QVBoxLayout(frame)
+        inner.setContentsMargins(10, 10, 10, 10)
+        self.view = PageView()
+        self.view.clicked.connect(self.jump_to_point)
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.view)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        outer.addWidget(self.scroll, 1)
-        self.setCentralWidget(body)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.verticalScrollBar().valueChanged.connect(
+            lambda _v: self.update_page_pill())
+        inner.addWidget(self.scroll)
+        return frame
 
-        # The player runs on its own threads; the window asks where it is,
-        # the same way the caption panel follows the microphone level.
-        self.follow = QTimer(self)
-        self.follow.timeout.connect(self.follow_player)
-        self.follow.setInterval(80)
-        self._shown = -1
-        self._start_at = 0        # where Read begins, set by a click
+    def build_transport(self):
+        column = QVBoxLayout()
+        column.setSpacing(10)
 
-        # Space is what a reader reaches for; the arrows step a sentence.
-        for keys, action in ((("Space",), self.toggle),
-                             (("Left",), lambda: self.step(-1)),
-                             (("Right",), lambda: self.step(1)),
-                             (("Home",), self.restart)):
-            for key in keys:
-                QShortcut(QKeySequence(key), self, activated=action)
+        self.progress = QSlider(Qt.Orientation.Horizontal)
+        self.progress.setEnabled(False)
+        self.progress.setRange(0, 0)
+        self.progress.sliderPressed.connect(
+            lambda: setattr(self, "_seeking", True))
+        self.progress.sliderReleased.connect(self.seek)
+        column.addWidget(self.progress)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.speed = QComboBox()
+        self.speed.addItems(SPEEDS)
+        self.speed.setCurrentText("1.0x")
+        self.speed.currentTextChanged.connect(self.change_speed)
+        self.left_label = QLabel("")
+        self.left_label.setObjectName("left")
+        row.addWidget(self.speed)
+        row.addWidget(self.left_label)
+        row.addStretch(1)
+
+        self.back_button = QPushButton("\u25c0\u25c0")
+        self.back_button.setObjectName("step")
+        self.back_button.setToolTip("Back one sentence (left arrow)")
+        self.back_button.clicked.connect(lambda: self.step(-1))
+        self.play_button = QPushButton("\u25b6")
+        self.play_button.setObjectName("play")
+        self.play_button.setToolTip("Read or pause (space)")
+        self.play_button.clicked.connect(self.toggle)
+        self.forward_button = QPushButton("\u25b6\u25b6")
+        self.forward_button.setObjectName("step")
+        self.forward_button.setToolTip("Forward one sentence (right arrow)")
+        self.forward_button.clicked.connect(lambda: self.step(1))
+        for button in (self.back_button, self.play_button, self.forward_button):
+            button.setEnabled(False)
+            row.addWidget(button)
+
+        row.addStretch(1)
+        self.right_label = QLabel("")
+        self.right_label.setObjectName("right")
+        row.addWidget(self.right_label)
+        self.restart_button = QPushButton("Restart")
+        self.restart_button.setToolTip("Read from the beginning (Home)")
+        self.restart_button.setEnabled(False)
+        self.restart_button.clicked.connect(self.restart)
+        row.addWidget(self.restart_button)
+        column.addLayout(row)
+
+        # The status line lives at the bottom left; open() and the voice
+        # loader write to it, so it keeps the name they use.
+        self.status = self.left_label
+        return column
+
+    # -- the frameless window ---------------------------------------------
+    def mousePressEvent(self, event):
+        if not self._drag_press(event):
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if not self._drag_move(event):
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_release()
+        super().mouseReleaseEvent(event)
+
+    # -- the transport -----------------------------------------------------
+    def show_playing(self, playing):
+        # Text glyphs, not the emoji forms, which render in their own colour
+        self.play_button.setText("\u275a\u275a" if playing else "\u25b6")
+
+    def seek(self):
+        self._seeking = False
+        if self.items:
+            self.go_to(self.progress.value())
+
+    def update_page_pill(self):
+        """Which page is under the top of the view."""
+        if not self.doc:
+            return
+        top = self.scroll.verticalScrollBar().value() + 40
+        self.page_pill.setText(
+            f"Page {self.view.page_at(top) + 1} / {self.doc.page_count}")
 
     # -- opening -----------------------------------------------------------
     def choose_file(self):
@@ -322,15 +429,21 @@ class ReaderWindow(QMainWindow):
         if self.items:
             self.mark_item(self.items[0])
         words = sum(len(i.text.split()) for i in self.items)
-        self.status.setText(
-            f"{self.doc.page_count} pages, {words} words to read, "
-            f"about {words / 150:.0f} minutes")
+        self.path = path
+        self.filename.setText(os.path.basename(path))
+        self.meta.setText(
+            f"{chrome.readable_size(path)}  ·  {self.doc.page_count} pages"
+            f"  ·  about {words / 150:.0f} min to read")
+        self.progress.setRange(0, max(0, len(self.items) - 1))
+        self.progress.setValue(0)
+        self.progress.setEnabled(bool(self.items))
+        self.update_page_pill()
         for button in (self.play_button, self.restart_button,
                        self.back_button, self.forward_button):
             button.setEnabled(bool(self.items))
         self._start_at = 0
         self.report()
-        self.setWindowTitle(f"Read: {path.rsplit('/', 1)[-1]}")
+        self.setWindowTitle(f"Read: {os.path.basename(path)}")
         log(f"reader: opened {path} ({words} words)")
 
     def fit_pages(self):
@@ -366,11 +479,11 @@ class ReaderWindow(QMainWindow):
             self.player = Player(voice, self.items, speed=self.speed_value())
             self.player.start(self._start_at)
             self.follow.start()
-            self.play_button.setText("Pause")
+            self.show_playing(True)
             self.report()
             return
         self.player.toggle()
-        self.play_button.setText("Pause" if self.player.playing else "Read")
+        self.show_playing(self.player.playing)
         self.report()
 
     def change_speed(self, _text):
@@ -388,7 +501,7 @@ class ReaderWindow(QMainWindow):
         if self.player is not None:
             self.player.stop()
             self.player = None
-        self.play_button.setText("Read")
+        self.show_playing(False)
 
     def report(self):
         """Where the reading is, and how much of the paper is left."""
@@ -398,9 +511,11 @@ class ReaderWindow(QMainWindow):
         left = sum(len(i.text.split()) for i in self.items[index:])
         state = ("Reading" if self.player and self.player.playing
                  else "Paused" if self.player else "Ready")
-        self.status.setText(
-            f"{state}  ·  sentence {index + 1} of {len(self.items)}  "
-            f"·  about {max(1, round(left / 150))} min left")
+        self.left_label.setText(
+            f"{state}  ·  sentence {index + 1} of {len(self.items)}")
+        self.right_label.setText(f"about {max(1, round(left / 150))} min left")
+        if not self._seeking:
+            self.progress.setValue(index)
 
     def follow_player(self):
         """Tint the sentence being read and keep it in view."""
@@ -408,8 +523,8 @@ class ReaderWindow(QMainWindow):
             return
         index, _elapsed = self.player.position()
         if index == self._shown:
-            if not self.player.playing and self.play_button.text() == "Pause":
-                self.play_button.setText("Read")
+            if not self.player.playing:
+                self.show_playing(False)
             return
         self._shown = index
         self._start_at = index
@@ -469,7 +584,7 @@ class ReaderWindow(QMainWindow):
             self.toggle()
         else:
             self.player.jump(index)
-            self.play_button.setText("Pause" if self.player.playing else "Read")
+            self.show_playing(self.player.playing)
         self.report()
 
     def restart(self):
