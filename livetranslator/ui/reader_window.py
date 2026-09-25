@@ -16,7 +16,7 @@ from PySide6.QtGui import (
     QColor, QGuiApplication, QImage, QKeySequence, QPainter, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
@@ -346,6 +346,15 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         row.addLayout(words)
         row.addStretch(1)
 
+        self.language = chrome.Chooser()
+        self.language.setObjectName("lang")
+        globe = chrome.globe_icon()
+        for name, _code in READ_IN:
+            self.language.addItem(globe, name)
+        self.language.setToolTip("Read the paper aloud in this language")
+        self.language.currentIndexChanged.connect(self.change_language)
+        row.addWidget(self.language)
+
         for glyph, tip, action in (("\u2014", "Minimise", self.showMinimized),
                                    ("\u2715", "Close", self.close)):
             button = QPushButton(glyph)
@@ -414,44 +423,52 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         return holder
 
     def build_transport(self):
-        column = QVBoxLayout()
-        column.setSpacing(6)
+        """Two rows: where the reading is, then what it is doing.
 
+        The reference design flanks the progress track with the times and
+        centres the controls under it. Putting the status text on the track
+        row is what makes that work: it used to sit beside the speed, and a
+        line as long as "sentence 141 of 329, Chinese, offline translation"
+        pushed the play button well off centre.
+        """
+        column = QVBoxLayout()
+        column.setSpacing(9)
+
+        track = QHBoxLayout()
+        track.setSpacing(12)
+        self.left_label = QLabel("")
+        self.left_label.setObjectName("left")
         self.progress = QSlider(Qt.Orientation.Horizontal)
         self.progress.setEnabled(False)
         self.progress.setRange(0, 0)
+        self.progress.setMinimumWidth(260)
         self.progress.sliderPressed.connect(
             lambda: setattr(self, "_seeking", True))
         self.progress.sliderReleased.connect(self.seek)
-        column.addWidget(self.progress)
+        self.right_label = QLabel("")
+        self.right_label.setObjectName("right")
+        track.addWidget(self.left_label)
+        track.addWidget(self.progress, 1)
+        track.addWidget(self.right_label)
+        column.addLayout(track)
 
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.speed = QComboBox()
+        self.speed = chrome.Chooser()
         self.speed.addItems(SPEEDS)
         self.speed.setCurrentText("1.0x")
+        self.speed.setToolTip("How fast the voice reads")
         self.speed.currentTextChanged.connect(self.change_speed)
-        self.language = QComboBox()
-        self.language.addItems([name for name, _code in READ_IN])
-        self.language.setToolTip("Read the paper aloud in this language")
-        self.language.currentIndexChanged.connect(self.change_language)
-        row.addWidget(self.language)
-        self.left_label = QLabel("")
-        self.left_label.setObjectName("left")
         row.addWidget(self.speed)
-        row.addWidget(self.left_label)
         row.addStretch(1)
 
-        self.back_button = QPushButton("\u25c0\u25c0")
-        self.back_button.setObjectName("step")
+        self.back_button = chrome.TransportButton("prev")
         self.back_button.setToolTip("Back one sentence (left arrow)")
         self.back_button.clicked.connect(lambda: self.step(-1))
-        self.play_button = QPushButton("\u25b6")
-        self.play_button.setObjectName("play")
+        self.play_button = chrome.TransportButton("play", primary=True)
         self.play_button.setToolTip("Read or pause (space)")
         self.play_button.clicked.connect(self.toggle)
-        self.forward_button = QPushButton("\u25b6\u25b6")
-        self.forward_button.setObjectName("step")
+        self.forward_button = chrome.TransportButton("next")
         self.forward_button.setToolTip("Forward one sentence (right arrow)")
         self.forward_button.clicked.connect(lambda: self.step(1))
         for button in (self.back_button, self.play_button, self.forward_button):
@@ -459,9 +476,6 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             row.addWidget(button)
 
         row.addStretch(1)
-        self.right_label = QLabel("")
-        self.right_label.setObjectName("right")
-        row.addWidget(self.right_label)
         self.restart_button = QPushButton("Restart")
         self.restart_button.setToolTip("Read from the beginning (Home)")
         self.restart_button.setEnabled(False)
@@ -469,8 +483,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         row.addWidget(self.restart_button)
         column.addLayout(row)
 
-        # The status line lives at the bottom left; open() and the voice
-        # loader write to it, so it keeps the name they use.
+        # open() and the voice loader write here, so it keeps the name they use
         self.status = self.left_label
         return column
 
@@ -503,8 +516,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
 
     # -- the transport -----------------------------------------------------
     def show_playing(self, playing):
-        # Text glyphs, not the emoji forms, which render in their own colour
-        self.play_button.setText("\u275a\u275a" if playing else "\u25b6")
+        self.play_button.set_kind("pause" if playing else "play")
 
     def seek(self):
         self._seeking = False
@@ -652,6 +664,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             self.repaint()
             try:
                 self.into, self.warning = self.build_translation(code)
+                self.language.setToolTip(
+                    self.warning or "Read the paper aloud in this language")
             except Exception as e:
                 self.language.setCurrentIndex(0)
                 self.into, self.warning = None, ""
@@ -695,7 +709,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.right_label.setText(f"about {max(1, round(left / 150))} min left")
         if self.into is not None:
             said = {code: name for name, code in READ_IN}[self.language_code()]
-            note = f" ({self.warning})" if self.warning else ""
+            note = "  \u00b7  rough offline translation" if self.warning else ""
             self.left_label.setText(
                 self.left_label.text() + f"  \u00b7  {said}{note}")
         if not self._seeking:
