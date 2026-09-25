@@ -2,7 +2,9 @@
 import pytest
 
 from livetranslator.reader.player import Passage, Player
-from livetranslator.reader.translated import SPEAKS, Translation
+from livetranslator.reader.translated import (
+    PHONEMES, VOICES, Translation, default_voice, voices_for,
+)
 from livetranslator.reader.voice import Spoken
 
 
@@ -65,15 +67,41 @@ def test_chinese_is_spoken_in_a_chinese_voice():
     into.say(voice, a_passage(), 1.0)
     text, name, lang = voice.said[0]
     assert text.startswith("[zt]")
-    assert (name, lang) == SPEAKS["zt"]
+    assert lang == PHONEMES["zt"]
     assert name.startswith("z"), "a Kokoro Mandarin voice is named zf_/zm_"
 
 
-def test_every_offered_language_has_a_voice():
+def test_a_chosen_voice_is_the_one_that_speaks():
+    voice = FakeVoice()
+    into = Translation("zt", FakeEngine(), voice="zm_yunxi")
+    into.say(voice, a_passage(), 1.0)
+    assert voice.said[0][1] == "zm_yunxi"
+
+
+def test_every_language_offers_a_woman_and_a_man():
+    """The point of the list is a choice, not a longer menu."""
+    for code, offered in VOICES.items():
+        sexes = {name[1] for _label, name in offered}
+        assert sexes == {"f", "m"}, f"{code} offers only {sexes}"
+        assert len(offered) >= 2
+
+
+def test_a_voice_is_named_for_the_language_it_reads():
+    """An American voice reading Mandarin is nonsense, not an accent."""
+    for code, offered in VOICES.items():
+        first = {"en": ("a", "b"), "zt": ("z",)}[code]
+        for label, name in offered:
+            assert name[0] in first, f"{name} cannot read {code}"
+            assert "female" in label or "male" in label
+
+
+def test_every_offered_language_has_voices_and_phonemes():
     from livetranslator.ui.reader_window import READ_IN
 
     for _name, code in READ_IN:
-        assert code in SPEAKS, f"{code} is offered but nothing can speak it"
+        assert voices_for(code), f"{code} is offered but nothing can speak it"
+        assert code in PHONEMES, f"{code} has no espeak language"
+        assert default_voice(code) == VOICES[code][0][1]
 
 
 def test_the_player_reads_the_translation_not_the_original():
@@ -96,7 +124,22 @@ def test_reading_as_written_needs_no_engine():
     assert player.into is None
 
 
-@pytest.mark.parametrize("code", sorted(SPEAKS))
-def test_each_voice_is_named_for_its_language(code):
-    name, lang = SPEAKS[code]
-    assert name and lang, f"{code} has no voice"
+@pytest.mark.parametrize("name", sorted(
+    n for offered in VOICES.values() for _label, n in offered))
+def test_the_model_really_has_this_voice(name):
+    """A typo here is silent until someone picks that voice."""
+    import os
+
+    from livetranslator.reader.voice import MODEL, VOICES as VOICE_FILE, Voice
+
+    if not (os.path.exists(MODEL) and os.path.exists(VOICE_FILE)):
+        pytest.skip("the Kokoro model files are not installed")
+    assert name in Voice().kokoro.get_voices()
+
+
+def test_the_player_reads_in_the_voice_it_was_given():
+    voice = FakeVoice()
+    item = a_passage()
+    player = Player(voice, [item], voice_name="am_michael")
+    player.voice.say(item.text, speed=1.0, voice=player.voice_name)
+    assert voice.said[0][1] == "am_michael"

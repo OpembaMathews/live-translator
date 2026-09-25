@@ -55,10 +55,12 @@ def passages(lines):
 class Player:
     """Plays a list of passages, and can be asked where it is."""
 
-    def __init__(self, voice, items, speed=1.0, on_change=None, into=None):
+    def __init__(self, voice, items, speed=1.0, on_change=None, into=None,
+                 voice_name=None):
         self.voice = voice
         self.items = items
         self.speed = speed
+        self.voice_name = voice_name      # None reads in the voice's default
         self.on_change = on_change or (lambda index: None)
         # None reads the paper as written; a Translation reads it in another
         # language, in that language's voice.
@@ -127,7 +129,8 @@ class Player:
             item = self.items[self._next]
             try:
                 item.spoken = (
-                    self.voice.say(item.text, speed=self.speed)
+                    self.voice.say(item.text, speed=self.speed,
+                                   voice=self.voice_name)
                     if self.into is None
                     else self.into.say(self.voice, item, self.speed))
             except Exception as e:

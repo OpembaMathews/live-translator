@@ -15,7 +15,7 @@ class FakeVoice:
     def __init__(self, seconds=0.4):
         self.seconds, self.said = seconds, []
 
-    def say(self, text, speed=1.0):
+    def say(self, text, speed=1.0, voice=None, lang="en-us"):
         self.said.append(text)
         samples = np.zeros(int(SAMPLE_RATE * self.seconds), dtype=np.float32)
         return Spoken(text, samples, [])
@@ -124,7 +124,7 @@ def test_jump_starts_from_the_chosen_passage(silent):
 
 def test_a_sentence_that_will_not_speak_is_skipped(silent):
     class Broken(FakeVoice):
-        def say(self, text, speed=1.0):
+        def say(self, text, speed=1.0, voice=None, lang="en-us"):
             if "2" in text:
                 raise RuntimeError("no")
             return super().say(text, speed)

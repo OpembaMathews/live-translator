@@ -12,18 +12,33 @@ kept, so stepping back over a paragraph does not pay for it twice.
 import threading
 
 from ..log import log
-from .voice import DEFAULT_VOICE
 
-# Which Kokoro voice reads which language, and what to phonemise it as.
-# Kokoro ships eight Mandarin voices; espeak-ng calls the language "cmn".
-SPEAKS = {
-    "en": (DEFAULT_VOICE, "en-us"),
-    "zt": ("zf_xiaoxiao", "cmn"),
+# Kokoro names a voice for its language and its speaker: "a" is American,
+# "b" British and "z" Mandarin, then "f" or "m". Three to a language is
+# enough to choose between without turning this into a catalogue, and each
+# is one the project grades well.
+VOICES = {
+    "en": (("Heart \u00b7 female", "af_heart"),
+           ("Michael \u00b7 male", "am_michael"),
+           ("Puck \u00b7 male", "am_puck")),
+    "zt": (("Xiaoxiao \u00b7 female", "zf_xiaoxiao"),
+           ("Yunxi \u00b7 male", "zm_yunxi"),
+           ("Yunyang \u00b7 male", "zm_yunyang")),
 }
+# What espeak-ng calls each language. It has no "zh"; Mandarin is "cmn".
+PHONEMES = {"en": "en-us", "zt": "cmn"}
+
+
+def voices_for(language):
+    return VOICES.get(language, ())
+
+
+def default_voice(language):
+    return VOICES[language][0][1]
 
 
 def can_speak(language):
-    return language in SPEAKS
+    return language in VOICES
 
 
 class Translation:
@@ -34,11 +49,12 @@ class Translation:
     instead and the reason is logged once.
     """
 
-    def __init__(self, target, engine, source="en"):
+    def __init__(self, target, engine, voice=None, source="en"):
         self.target = target
         self.engine = engine
         self.source = source
-        self.voice_name, self.lang = SPEAKS[target]
+        self.voice_name = voice or default_voice(target)
+        self.lang = PHONEMES[target]
         self._done = {}
         self._lock = threading.Lock()
         self._complained = False

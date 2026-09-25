@@ -24,7 +24,7 @@ from ..log import log
 from . import reader_chrome as chrome
 from ..reader import document
 from ..reader.player import Player, passages
-from ..reader.translated import Translation
+from ..reader.translated import Translation, voices_for
 
 DPI = 130
 PAGE_GAP = 14
@@ -460,6 +460,12 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.speed.setToolTip("How fast the voice reads")
         self.speed.currentTextChanged.connect(self.change_speed)
         row.addWidget(self.speed)
+
+        self.reader_voice = chrome.Chooser()
+        self.reader_voice.setToolTip("Who reads it")
+        self.reader_voice.currentIndexChanged.connect(self.change_voice)
+        self.fill_voices()
+        row.addWidget(self.reader_voice)
         row.addStretch(1)
 
         self.back_button = chrome.TransportButton("prev")
@@ -620,7 +626,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
                 log(f"reader: voice unavailable: {type(e).__name__}: {e}")
                 return
             self.player = Player(voice, self.items, speed=self.speed_value(),
-                                 into=self.into)
+                                 into=self.into, voice_name=self.voice_name())
             self.player.start(self._start_at)
             self.follow.start()
             self.show_playing(True)
@@ -633,6 +639,39 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
     # -- reading it in another language ------------------------------------
     def language_code(self):
         return READ_IN[self.language.currentIndex()][1]
+
+    def fill_voices(self):
+        """The voices that can read the language now chosen.
+
+        Kokoro's voices are language-specific -- an American voice reading
+        Mandarin is not a worse accent, it is nonsense -- so the list is
+        rebuilt whenever the language changes, keeping the same speaker
+        where the new language has one of the same sex.
+        """
+        wanted = self.reader_voice.currentData() or ""
+        offered = voices_for(self.language_code())
+        self.reader_voice.blockSignals(True)
+        self.reader_voice.clear()
+        for label, name in offered:
+            self.reader_voice.addItem(label, name)
+        keep = [n for _label, n in offered if n[1:2] == wanted[1:2]]
+        if keep:
+            self.reader_voice.setCurrentIndex(
+                [n for _label, n in offered].index(keep[0]))
+        self.reader_voice.blockSignals(False)
+
+    def voice_name(self):
+        return self.reader_voice.currentData()
+
+    def change_voice(self, _index):
+        """Read on in the new voice, from the sentence being read."""
+        if self.into is not None:
+            self.into.voice_name = self.voice_name()
+        if self.player is None:
+            return
+        at = self.player.position()[0]
+        self.player.voice_name = self.voice_name()
+        self.player.jump(at)       # the sentence is remade in the new voice
 
     def build_translation(self, code):
         """The engine to translate with, and what to warn about it.
@@ -657,6 +696,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
     def change_language(self, _index):
         """Switch languages, carrying on from the sentence being read."""
         code = self.language_code()
+        self.fill_voices()
         if code == "en":
             self.into, self.warning = None, ""
         else:
@@ -664,6 +704,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             self.repaint()
             try:
                 self.into, self.warning = self.build_translation(code)
+                self.into.voice_name = self.voice_name()
                 self.language.setToolTip(
                     self.warning or "Read the paper aloud in this language")
             except Exception as e:
