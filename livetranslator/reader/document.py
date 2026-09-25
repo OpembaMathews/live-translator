@@ -29,6 +29,12 @@ HEADING_SIZE = 14.5
 SUBHEADING_SIZE = 12.5
 HEADER_BAND = 62        # points from the top that hold the running header
 FOOTER_BAND = 60        # and from the bottom, the footer and page number
+# Publishers put very different things in a footer, at very different heights:
+# a download line, a copyright, a journal and volume, a page number. What they
+# have in common is repetition, so anything near the top or bottom edge that
+# says the same thing on several pages is treated as furniture.
+EDGE_BAND = 0.14        # share of the page height counted as near an edge
+REPEATS = 0.4           # ...on at least this share of the pages
 # Affiliations on the front page and a table's own rows are both set at 8.5
 # point in this journal, so one threshold cannot tell them apart. The front
 # page is stricter: everything small there is front matter. In the body, only
@@ -119,9 +125,36 @@ def _authors(text):
     return f"By {joined}."
 
 
+def _shape(text):
+    """The text with its numbers removed, so page numbers match each other."""
+    return re.sub(r"\d+", "#", " ".join(text.split()).lower())
+
+
+def furniture(doc, sample=None):
+    """Lines near the top or bottom edge that repeat across the pages."""
+    pages = range(doc.page_count if sample is None else min(sample, doc.page_count))
+    seen = {}
+    for pno in pages:
+        page = doc[pno]
+        height = page.rect.height
+        for block in page.get_text("dict")["blocks"]:
+            if block.get("type") != 0:
+                continue
+            x0, y0, x1, y1 = block["bbox"]
+            if y1 > height * EDGE_BAND and y0 < height * (1 - EDGE_BAND):
+                continue           # not near an edge
+            shape = _shape(block_text(block))
+            if len(shape) > 3:
+                seen.setdefault(shape, set()).add(pno)
+    least = max(2, int(len(pages) * REPEATS))
+    return {shape for shape, pages_seen in seen.items()
+            if len(pages_seen) >= least}
+
+
 def plan(doc):
     """Every block of the document, in reading order, with its decision."""
     rows = []
+    repeated = furniture(doc)
     stopped = after_title = skip_contact = in_table = False
     for pno in range(doc.page_count):
         page = doc[pno]
@@ -141,6 +174,12 @@ def plan(doc):
 
             # Page furniture first: it is skipped for its own reason, even on
             # a page where the article body has already ended.
+            near_top = y1 < height * EDGE_BAND
+            near_bottom = y0 > height * (1 - EDGE_BAND)
+            if (near_top or near_bottom) and _shape(text) in repeated:
+                add(SKIP, "running header" if near_top
+                    else "footer, repeated on every page")
+                continue
             if y1 < HEADER_BAND:
                 add(SKIP, "running header")
                 continue

@@ -211,3 +211,52 @@ def test_the_punctuation_after_a_link_survives():
         == "See D-O-I, then read on."
     assert speakable.speakable("Data are at www.example.org/set.") \
         == "Data are at URL."
+
+
+# --- page furniture, built as a small PDF so no paper is needed ------------
+def make_pdf(tmp_path, pages=4, footer="Downloaded from example.org on page {n}"):
+    import pymupdf
+
+    doc = pymupdf.open()
+    for n in range(1, pages + 1):
+        page = doc.new_page()
+        page.insert_text((72, 60), "Journal of Testing, Vol 12", fontsize=9)
+        page.insert_text((72, 300),
+                         f"This is the body of page {n}, which should be read "
+                         "aloud in full.", fontsize=11)
+        page.insert_text((72, page.rect.height - 40), footer.format(n=n),
+                         fontsize=8)
+    path = tmp_path / "paper.pdf"
+    doc.save(path)
+    return document.open_document(str(path))
+
+
+def test_a_repeating_footer_is_found(tmp_path):
+    doc = make_pdf(tmp_path)
+    shapes = document.furniture(doc)
+    assert any("downloaded from" in s for s in shapes)
+    assert any("journal of testing" in s for s in shapes)
+
+
+def test_the_footer_is_skipped_and_the_body_is_read(tmp_path):
+    rows = document.plan(make_pdf(tmp_path))
+    read = " ".join(r.text for r in rows if r.action == document.READ)
+    assert "body of page 1" in read
+    assert "Downloaded" not in read, "the footer was read aloud"
+    assert "Journal of Testing" not in read, "the header was read aloud"
+
+
+def test_a_line_that_appears_once_is_not_treated_as_furniture(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    for n in range(3):
+        page = doc.new_page()
+        page.insert_text((72, 300), f"Body text on page {n}.", fontsize=11)
+    page = doc[-1]
+    page.insert_text((72, page.rect.height - 40),
+                     "A closing remark that appears only once.", fontsize=11)
+    path = tmp_path / "once.pdf"
+    doc.save(path)
+    shapes = document.furniture(document.open_document(str(path)))
+    assert not any("closing remark" in s for s in shapes)
