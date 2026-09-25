@@ -180,3 +180,34 @@ def test_separate_lines_stay_separate():
     rows = merge_lines([(10, 100, 90, 112), (10, 120, 60, 132)])
     assert len(rows) == 2
     assert rows[0][1] < rows[1][1], "lines keep their order down the page"
+
+
+# --- links, which are unlistenable when read out in full -------------------
+def test_a_web_address_becomes_the_word_url():
+    said = speakable.speakable(
+        "The data are at https://aging.jmir.org/2025/1/e75019 for readers.")
+    assert said == "The data are at URL for readers."
+
+
+def test_a_doi_is_spelled_rather_than_read_as_doy():
+    for text in ("doi: 10.2196/75019", "https://doi.org/10.2196/75019"):
+        assert speakable.speakable(f"See {text} for details.") \
+            == "See D-O-I for details."
+
+
+def test_an_email_address_is_named_not_spelled():
+    assert speakable.speakable("Write to weiqi.koh@uq.edu.au today.") \
+        == "Write to an email address today."
+
+
+def test_ordinary_text_with_a_full_stop_is_untouched():
+    text = "The result was 10.5 percent. That was the finding."
+    assert speakable.speakable(text) == text
+
+
+def test_the_punctuation_after_a_link_survives():
+    # the address runs to the next space, so it would swallow the comma
+    assert speakable.speakable("See doi: 10.2196/75019, then read on.") \
+        == "See D-O-I, then read on."
+    assert speakable.speakable("Data are at www.example.org/set.") \
+        == "Data are at URL."
