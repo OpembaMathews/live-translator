@@ -9,7 +9,7 @@ few megabytes; rendering every page up front would stall the open.
 """
 import pymupdf
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -80,6 +80,7 @@ class PageView(QWidget):
         self.doc = None
         self.scale = DPI / 72.0
         self._pixmaps = {}
+        self._boxes = {}
         self._tops = []                # y of each page in this widget
         self.mark = None               # (page, [boxes in PDF points])
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -136,6 +137,12 @@ class PageView(QWidget):
         self.update()
 
     def boxes_for(self, item):
+        """Cached, because a click hit-tests every sentence on the page."""
+        if item.index not in self._boxes:
+            self._boxes[item.index] = self._find_boxes(item)
+        return self._boxes[item.index]
+
+    def _find_boxes(self, item):
         """Where a sentence sits on the page, line by line.
 
         The block box would tint a whole abstract at once. Searching for the
@@ -242,6 +249,18 @@ class ReaderWindow(QMainWindow):
         self.play_button.setObjectName("play")
         self.play_button.setEnabled(False)
         self.play_button.clicked.connect(self.toggle)
+        self.restart_button = QPushButton("Restart")
+        self.restart_button.setToolTip("Read from the beginning (Home)")
+        self.restart_button.setEnabled(False)
+        self.restart_button.clicked.connect(self.restart)
+        self.back_button = QPushButton("◀")
+        self.back_button.setToolTip("Back one sentence (left arrow)")
+        self.back_button.setEnabled(False)
+        self.back_button.clicked.connect(lambda: self.step(-1))
+        self.forward_button = QPushButton("▶")
+        self.forward_button.setToolTip("Forward one sentence (right arrow)")
+        self.forward_button.setEnabled(False)
+        self.forward_button.clicked.connect(lambda: self.step(1))
         self.speed = QComboBox()
         self.speed.addItems(SPEEDS)
         self.speed.setCurrentText("1.0x")
@@ -250,6 +269,9 @@ class ReaderWindow(QMainWindow):
         self.status.setObjectName("status")
         bar.addWidget(self.open_button)
         bar.addWidget(self.play_button)
+        bar.addWidget(self.back_button)
+        bar.addWidget(self.forward_button)
+        bar.addWidget(self.restart_button)
         bar.addWidget(QLabel("Speed"))
         bar.addWidget(self.speed)
         bar.addWidget(self.status, 1)
@@ -273,6 +295,15 @@ class ReaderWindow(QMainWindow):
         self.follow.timeout.connect(self.follow_player)
         self.follow.setInterval(80)
         self._shown = -1
+        self._start_at = 0        # where Read begins, set by a click
+
+        # Space is what a reader reaches for; the arrows step a sentence.
+        for keys, action in ((("Space",), self.toggle),
+                             (("Left",), lambda: self.step(-1)),
+                             (("Right",), lambda: self.step(1)),
+                             (("Home",), self.restart)):
+            for key in keys:
+                QShortcut(QKeySequence(key), self, activated=action)
 
     # -- opening -----------------------------------------------------------
     def choose_file(self):
@@ -294,7 +325,11 @@ class ReaderWindow(QMainWindow):
         self.status.setText(
             f"{self.doc.page_count} pages, {words} words to read, "
             f"about {words / 150:.0f} minutes")
-        self.play_button.setEnabled(bool(self.items))
+        for button in (self.play_button, self.restart_button,
+                       self.back_button, self.forward_button):
+            button.setEnabled(bool(self.items))
+        self._start_at = 0
+        self.report()
         self.setWindowTitle(f"Read: {path.rsplit('/', 1)[-1]}")
         log(f"reader: opened {path} ({words} words)")
 
@@ -316,6 +351,8 @@ class ReaderWindow(QMainWindow):
             self.status.setText("Loading the voice...")
             self.repaint()
             self.voice = self.voice_factory()
+            if self.voice is None:
+                raise RuntimeError("no voice is available")
         return self.voice
 
     def toggle(self):
@@ -327,15 +364,14 @@ class ReaderWindow(QMainWindow):
                 log(f"reader: voice unavailable: {type(e).__name__}: {e}")
                 return
             self.player = Player(voice, self.items, speed=self.speed_value())
-            self.player.start(self.current_index())
+            self.player.start(self._start_at)
             self.follow.start()
             self.play_button.setText("Pause")
-            self.status.setText("Reading")
+            self.report()
             return
         self.player.toggle()
-        playing = self.player.playing
-        self.play_button.setText("Pause" if playing else "Read")
-        self.status.setText("Reading" if playing else "Paused")
+        self.play_button.setText("Pause" if self.player.playing else "Read")
+        self.report()
 
     def change_speed(self, _text):
         if self.player is None:
@@ -345,7 +381,7 @@ class ReaderWindow(QMainWindow):
         self.player.jump(at)        # the sentence is remade at the new speed
 
     def current_index(self):
-        return self.player.position()[0] if self.player else 0
+        return self.player.position()[0] if self.player else self._start_at
 
     def stop(self):
         self.follow.stop()
@@ -353,6 +389,18 @@ class ReaderWindow(QMainWindow):
             self.player.stop()
             self.player = None
         self.play_button.setText("Read")
+
+    def report(self):
+        """Where the reading is, and how much of the paper is left."""
+        if not self.items:
+            return
+        index = self.current_index()
+        left = sum(len(i.text.split()) for i in self.items[index:])
+        state = ("Reading" if self.player and self.player.playing
+                 else "Paused" if self.player else "Ready")
+        self.status.setText(
+            f"{state}  ·  sentence {index + 1} of {len(self.items)}  "
+            f"·  about {max(1, round(left / 150))} min left")
 
     def follow_player(self):
         """Tint the sentence being read and keep it in view."""
@@ -364,6 +412,8 @@ class ReaderWindow(QMainWindow):
                 self.play_button.setText("Read")
             return
         self._shown = index
+        self._start_at = index
+        self.report()
         if 0 <= index < len(self.items):
             self.mark_item(self.items[index], follow=True)
 
@@ -386,24 +436,47 @@ class ReaderWindow(QMainWindow):
             bar.setValue(int(rect.top() - margin))
 
     def jump_to_point(self, page, point):
-        """Click a sentence to read from there."""
-        best = None
-        for item in self.items:
-            if item.page != page:
-                continue
-            x0, y0, x1, y1 = item.bbox
-            if x0 <= point.x() <= x1 and y0 <= point.y() <= y1:
-                best = item
-                break
-        if best is None:
-            return
-        self.mark_item(best)
-        self._shown = best.index
+        """Click a sentence to read from there.
+
+        The sentence's own boxes are tried first; a paragraph's block box
+        would pick its first sentence wherever in it you clicked.
+        """
+        x, y = point.x(), point.y()
+        here = [i for i in self.items if i.page == page]
+
+        def hit(boxes):
+            return any(x0 <= x <= x1 and y0 - 1 <= y <= y1 + 1
+                       for x0, y0, x1, y1 in boxes)
+
+        # Sentences located on the page first. A sentence that could not be
+        # found falls back to its block, and a block covers a whole paragraph,
+        # so checking both together would let it swallow every click in it.
+        for item in here:
+            boxes = self.view.boxes_for(item)
+            if boxes != [item.bbox] and hit(boxes):
+                return self.go_to(item.index)
+        for item in here:
+            if hit([item.bbox]):
+                return self.go_to(item.index)
+
+    def go_to(self, index):
+        """Read from one sentence, whether or not reading has started."""
+        index = max(0, min(index, len(self.items) - 1))
+        self._start_at = index
+        self._shown = index
+        self.mark_item(self.items[index], follow=True)
         if self.player is None:
             self.toggle()
         else:
-            self.player.jump(best.index)
+            self.player.jump(index)
             self.play_button.setText("Pause" if self.player.playing else "Read")
+        self.report()
+
+    def restart(self):
+        self.go_to(0)
+
+    def step(self, by):
+        self.go_to(self.current_index() + by)
 
     def closeEvent(self, event):
         self.stop()

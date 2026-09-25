@@ -139,3 +139,14 @@ def test_a_sentence_that_will_not_speak_is_skipped(silent):
     p.stop()
     # the reading carried on past the broken sentence
     assert "Sentence 3." in voice.said
+
+
+def test_stepping_and_restarting_stay_inside_the_document():
+    """go_to() clamps, so the arrows cannot run off either end."""
+    from livetranslator.reader.document import Line
+
+    lines = [Line(0, (0, 0, 1, 1), "read", "text", "One. Two. Three.")]
+    items = player_mod.passages(lines)
+    assert len(items) == 3
+    for asked, expected in ((-5, 0), (0, 0), (2, 2), (99, 2)):
+        assert max(0, min(asked, len(items) - 1)) == expected
