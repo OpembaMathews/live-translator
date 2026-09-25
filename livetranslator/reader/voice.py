@@ -72,10 +72,15 @@ class Voice:
                 "this Kokoro export reports no durations, so words cannot be "
                 "highlighted; use the model-files-v1.1 release")
 
-    def say(self, text, speed=1.0):
-        """Speak one sentence and report when each word is said."""
+    def say(self, text, speed=1.0, voice=None, lang="en-us"):
+        """Speak one sentence and report when each word is said.
+
+        A voice and a language can be given per sentence, because reading a
+        paper in Chinese means speaking Chinese sentences in a Chinese voice
+        while the English on the page stays where it is.
+        """
         audio, _rate, sounds = self.kokoro.create_timed(
-            text, voice=self.voice, speed=speed, lang="en-us")
+            text, voice=voice or self.voice, speed=speed, lang=lang)
         spoken = Spoken(text, audio, [])
         spoken.words = align(text, sounds, spoken.seconds)
         return spoken

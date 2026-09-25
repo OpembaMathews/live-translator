@@ -55,11 +55,14 @@ def passages(lines):
 class Player:
     """Plays a list of passages, and can be asked where it is."""
 
-    def __init__(self, voice, items, speed=1.0, on_change=None):
+    def __init__(self, voice, items, speed=1.0, on_change=None, into=None):
         self.voice = voice
         self.items = items
         self.speed = speed
         self.on_change = on_change or (lambda index: None)
+        # None reads the paper as written; a Translation reads it in another
+        # language, in that language's voice.
+        self.into = into
 
         self._ready = queue.Queue(maxsize=AHEAD)
         self._stop = threading.Event()
@@ -123,7 +126,10 @@ class Player:
         while not self._stop.is_set() and self._next < len(self.items):
             item = self.items[self._next]
             try:
-                item.spoken = self.voice.say(item.text, speed=self.speed)
+                item.spoken = (
+                    self.voice.say(item.text, speed=self.speed)
+                    if self.into is None
+                    else self.into.say(self.voice, item, self.speed))
             except Exception as e:
                 log(f"reader: could not speak {item.text[:40]!r}: "
                     f"{type(e).__name__}: {e}")

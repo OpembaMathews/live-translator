@@ -24,6 +24,7 @@ from ..log import log
 from . import reader_chrome as chrome
 from ..reader import document
 from ..reader.player import Player, passages
+from ..reader.translated import Translation
 
 DPI = 130
 PAGE_GAP = 14
@@ -35,6 +36,9 @@ READABLE = 1.7
 HIGHLIGHT = QColor(56, 189, 248, 62)       # the app's cyan, kept light
 HIGHLIGHT_EDGE = QColor(56, 189, 248, 90)
 SPEEDS = ("0.8x", "0.9x", "1.0x", "1.1x", "1.25x", "1.5x")
+# What the language box offers: the paper as written, or spoken in
+# another language while the English stays tinted on the page.
+READ_IN = (("As written", "en"), ("\u4e2d\u6587", "zt"))
 
 
 
@@ -311,6 +315,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self._shown = -1
         self._start_at = 0        # where Read begins, set by a click
         self._seeking = False
+        self.into = None       # a Translation once another language is picked
+        self.warning = ""
         self.fit_mode = "width"   # the fit button switches to "page"
 
         # Space is what a reader reaches for; the arrows step a sentence.
@@ -425,6 +431,11 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.speed.addItems(SPEEDS)
         self.speed.setCurrentText("1.0x")
         self.speed.currentTextChanged.connect(self.change_speed)
+        self.language = QComboBox()
+        self.language.addItems([name for name, _code in READ_IN])
+        self.language.setToolTip("Read the paper aloud in this language")
+        self.language.currentIndexChanged.connect(self.change_language)
+        row.addWidget(self.language)
         self.left_label = QLabel("")
         self.left_label.setObjectName("left")
         row.addWidget(self.speed)
@@ -596,7 +607,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
                 self.status.setText(f"No voice: {e}")
                 log(f"reader: voice unavailable: {type(e).__name__}: {e}")
                 return
-            self.player = Player(voice, self.items, speed=self.speed_value())
+            self.player = Player(voice, self.items, speed=self.speed_value(),
+                                 into=self.into)
             self.player.start(self._start_at)
             self.follow.start()
             self.show_playing(True)
@@ -604,6 +616,53 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             return
         self.player.toggle()
         self.show_playing(self.player.playing)
+        self.report()
+
+    # -- reading it in another language ------------------------------------
+    def language_code(self):
+        return READ_IN[self.language.currentIndex()][1]
+
+    def build_translation(self, code):
+        """The engine to translate with, and what to warn about it.
+
+        The offline packs are what this machine has, and on the long
+        sentences of a journal they drop clauses: one test sentence came back
+        as "the technology that older adults chose," and nothing else. They
+        are still offered, because a rough gist offline beats nothing, but
+        the status line has to say so rather than let a student believe they
+        have heard the paper.
+        """
+        from .. import settings
+        from ..translate import build_cloud_engine, build_engine
+
+        if settings.ai_enabled():
+            config = settings.load()
+            engine = build_cloud_engine(config["ai_provider"], config["ai_key"])
+            return Translation(code, engine), ""
+        return (Translation(code, build_engine()),
+                "offline translation, rough on long sentences")
+
+    def change_language(self, _index):
+        """Switch languages, carrying on from the sentence being read."""
+        code = self.language_code()
+        if code == "en":
+            self.into, self.warning = None, ""
+        else:
+            self.status.setText("Getting the translator ready...")
+            self.repaint()
+            try:
+                self.into, self.warning = self.build_translation(code)
+            except Exception as e:
+                self.language.setCurrentIndex(0)
+                self.into, self.warning = None, ""
+                self.status.setText(f"No translation: {e}")
+                log(f"reader: no translation: {type(e).__name__}: {e}")
+                return
+        if self.player is not None:
+            at = self.player.position()[0]
+            self.stop()
+            self.toggle()          # a new player, reading in the new voice
+            self.go_to(at)
         self.report()
 
     def change_speed(self, _text):
@@ -634,6 +693,11 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.left_label.setText(
             f"{state}  ·  sentence {index + 1} of {len(self.items)}")
         self.right_label.setText(f"about {max(1, round(left / 150))} min left")
+        if self.into is not None:
+            said = {code: name for name, code in READ_IN}[self.language_code()]
+            note = f" ({self.warning})" if self.warning else ""
+            self.left_label.setText(
+                self.left_label.text() + f"  \u00b7  {said}{note}")
         if not self._seeking:
             self.progress.setValue(index)
 
