@@ -13,3 +13,8 @@ sentencepiece
 
 # The window
 PySide6-Essentials
+
+# Reading documents aloud
+pymupdf
+kokoro-onnx
+soundfile
