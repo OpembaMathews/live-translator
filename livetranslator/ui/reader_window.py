@@ -751,6 +751,10 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         if self.into is not None:
             said = {code: name for name, code in READ_IN}[self.language_code()]
             note = "  \u00b7  rough offline translation" if self.warning else ""
+            # A sentence the checker could not mend is named, because a
+            # student listening has no way of knowing it heard half of one.
+            if self.into.doubted(index):
+                note = "  \u00b7  this sentence did not translate cleanly"
             self.left_label.setText(
                 self.left_label.text() + f"  \u00b7  {said}{note}")
         if not self._seeking:

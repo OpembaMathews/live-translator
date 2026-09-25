@@ -12,6 +12,7 @@ kept, so stepping back over a paragraph does not pay for it twice.
 import threading
 
 from ..log import log
+from ..translate import Checked
 
 # Kokoro names a voice for its language and its speaker: "a" is American,
 # "b" British and "z" Mandarin, then "f" or "m". Three to a language is
@@ -51,13 +52,22 @@ class Translation:
 
     def __init__(self, target, engine, voice=None, source="en"):
         self.target = target
-        self.engine = engine
+        # Every translation is checked, and one that broke off is retried a
+        # clause at a time. What still fails is remembered, so the reader can
+        # say so rather than read out half a sentence as if it were whole.
+        self.engine = engine if hasattr(engine, "attempt") else Checked(engine)
         self.source = source
         self.voice_name = voice or default_voice(target)
         self.lang = PHONEMES[target]
         self._done = {}
+        self._doubted = set()
         self._lock = threading.Lock()
         self._complained = False
+
+    def doubted(self, index):
+        """Whether that sentence is one the checker could not trust."""
+        with self._lock:
+            return index in self._doubted
 
     def text_for(self, passage):
         """The passage in the target language, or the original if it fails."""
@@ -65,8 +75,11 @@ class Translation:
             if passage.index in self._done:
                 return self._done[passage.index]
         try:
-            said = self.engine.translate(passage.source, self.source,
-                                         self.target).strip()
+            got = self.engine.attempt(passage.source, self.source, self.target)
+            said = got.text.strip()
+            if not got.ok:
+                with self._lock:
+                    self._doubted.add(passage.index)
         except Exception as e:
             if not self._complained:
                 self._complained = True

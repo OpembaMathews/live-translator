@@ -1,6 +1,7 @@
 """Translation: the local models, and the optional Claude and Gemini services.
 """
 
+import collections
 import pathlib
 import re
 import json as _json
@@ -24,6 +25,74 @@ class Translator:
 
     def translate(self, text, source, target):
         raise NotImplementedError
+
+
+Attempt = collections.namedtuple("Attempt", "text ok repaired")
+
+
+class Checked(Translator):
+    """Wraps a translator, spots a translation that broke off, retries it.
+
+    The offline packs are trained largely on film subtitles: they are good
+    for a caption and give up partway through the long sentences of a
+    journal. Measured on 100 sentences of one paper, 43 came back ending on
+    a dangling comma. Translating those again one clause at a time recovered
+    24 of the 43.
+
+    Only a sentence that already failed is retried, which is the whole point
+    of checking first: translating everything clause by clause helped some
+    sentences and spoiled others, and this cannot spoil what was right.
+    """
+
+    # A translation that ends on a clause separator stopped early. The
+    # source sentences all end in a full stop, so this needs no second
+    # model to judge it.
+    DANGLING = re.compile(r"[,\uff0c\u3001;\uff1b:\uff1a]\s*$")
+    CLAUSE = re.compile(r",\s+(?=\w)")
+    ENDINGS = "\u3002.!?\uff01\uff1f"
+    JOIN = "\uff0c"          # the Chinese comma joins clauses back together
+
+    def __init__(self, engine):
+        self.engine = engine
+        self.checked = 0
+        self.repairs = 0
+        self.suspect = 0
+
+    def translate(self, text, source, target):
+        return self.attempt(text, source, target).text
+
+    def attempt(self, text, source, target):
+        """Translate, and say whether the result can be trusted."""
+        out = self.engine.translate(text, source, target).strip()
+        self.checked += 1
+        if not self.DANGLING.search(out):
+            return Attempt(out, True, False)
+        mended = self._by_clause(text, source, target, out)
+        if mended is None:
+            self.suspect += 1
+            return Attempt(out, False, False)
+        self.repairs += 1
+        return Attempt(mended, True, True)
+
+    def _by_clause(self, text, source, target, was):
+        """The sentence again, a clause at a time, or None if that is no
+        better. A one-clause sentence has nothing to split, and a retry that
+        breaks off in the same way has not helped."""
+        parts = [p.strip() for p in self.CLAUSE.split(text) if p.strip()]
+        if len(parts) < 2:
+            return None
+        pieces = []
+        for part in parts:
+            got = self.engine.translate(part, source, target).strip()
+            got = got.rstrip(self.ENDINGS).strip()
+            if got:
+                pieces.append(got)
+        if not pieces:
+            return None
+        mended = self.JOIN.join(pieces) + self.ENDINGS[0]
+        if self.DANGLING.search(mended[:-1]) or len(mended) <= len(was):
+            return None
+        return mended
 
 
 class LeanEngine(Translator):
