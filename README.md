@@ -18,56 +18,36 @@ English is the pivot, so Chinese to Kiswahili works without a dedicated model.
 
 | Document | Read it for |
 |---|---|
-| [How it works](docs/architecture.md) | The pipeline, the modules, threading, and how streaming captions decide what to show |
+| [How it works](docs/architecture.md) | The package layout, the pipeline, threading, and how streaming captions decide what to show |
 | [Troubleshooting](docs/troubleshooting.md) | Captions not appearing, garbled words, Smart App Control, microphone level |
 | [Improving accuracy](docs/improving-accuracy.md) | Where the errors come from, and what Google Cloud and other services would change |
+| [Offline voices research](docs/research/offline-tts-for-pdf-reader.md) | Natural text-to-speech for the planned PDF reader |
 
-## Two front ends
+## Running it
 
-The same engine runs behind either window. Pick one.
-
-| | Start it with | Window |
-|---|---|---|
-| **Qt** (recommended) | `Start Live Translator (Qt).bat` or `pythonw qt_app.py` | Pill design with a level ring, status pills, and the heard line above the translated line |
-| **Tk** (original) | `Start Live Translator.bat` or `pythonw translation.py` | Single caption line with a radio-wave meter |
-
-Only the window differs. Capture, recognition, translation, settings storage
-and transcripts are shared code.
-
-## Features
-
-* **Two capture modes.** *Phrase* waits for a pause and then captions the
-  whole phrase. *Streaming* shows words as they are spoken, with unconfirmed
-  words dimmed, and roughly halves the delay. Choose under **Captions** in the
-  menu.
-* **Session transcripts.** Everything heard and shown is saved as you go, in a
-  `transcripts` folder beside the app, and survives a crash.
-* **Microphone or system audio**, switchable from the panel.
-* **Auto-detected or pinned languages**, for both what is spoken and what is
-  shown.
-* **Optional cloud AI.** Add a Claude or Gemini key and translation runs
-  through it, with the local models as an automatic fallback.
-* **Sharp on high-DPI displays.** Both windows render at the display's real
-  resolution instead of being stretched by Windows.
-
-## Running from source
+The app runs from source. There is no installer.
 
 ```
 pip install -r requirements.txt
-pythonw qt_app.py
+python -m livetranslator
 ```
 
-`PySide6-Essentials` in the requirements is only needed for the Qt window.
-`translation.py` runs without it.
+Then use any of these to start it:
 
-Optional startup flags, for either front end:
+* the **Live Translator** shortcut on the Desktop or in the Start menu
+* `run.bat` in this folder, which starts it without a console window
+* `python -m livetranslator`, which keeps a console open for tracebacks
+
+Optional startup flags, which `run.bat` passes through:
 
 * `--device <text>` picks an input by name, microphone or system audio
 * `--input auto|en|zt|sw` sets the spoken language
 * `--target auto|en|zt|sw` sets what gets displayed
-* `--setup` downloads the speech model and verifies translation, then exits
 
-## Using it (Qt window)
+The speech model downloads on first run, about 145 MB, and after that the app
+works offline.
+
+## Using it
 
 | Control | Does |
 |---|---|
@@ -80,8 +60,21 @@ Optional startup flags, for either front end:
 | Double-click | Cycles Small, Medium and Large |
 
 The gear menu covers audio input, spoken language, display language, capture
-mode, response speed, sensitivity, speech engine, size, opacity, and the
-transcript actions.
+mode, response speed, sensitivity, speech engine, AI translation, size,
+opacity, and the transcript actions.
+
+## Features
+
+* **Two capture modes.** *Phrase* waits for a pause and then captions the
+  whole phrase. *Streaming* shows words as they are spoken, with unconfirmed
+  words dimmed, and roughly halves the delay. Choose under **Captions**.
+* **Session transcripts**, saved as you go and kept if the app crashes.
+* **Microphone or system audio**, switchable from the panel.
+* **Auto-detected or pinned languages**, for both what is spoken and what is
+  shown.
+* **Optional cloud AI.** Add a Claude or Gemini key under **AI translation**
+  and translation runs through it, with the local models as an automatic
+  fallback.
 
 ## Transcripts
 
@@ -93,35 +86,28 @@ Each session writes two files into `transcripts/`, named by date and time:
   it holds everything up to the moment the app closed or crashed.
 
 Nothing is written until something is said. **Save transcript and open it** in
-the menu works mid-session; closing the app writes the readable copy
-automatically.
+the menu works mid-session; closing the app writes the readable copy.
 
 ## Optional: your own AI key
 
 With a Claude or Gemini key, translation runs through that model instead of the
-local ones. It is noticeably better, especially for Kiswahili, and needs
-nothing extra installed. Gemini can also do speech-to-text; Claude is text
-only.
+local ones. It is noticeably better, especially for Kiswahili. Gemini can also
+do speech-to-text; Claude is text only.
 
-The key is encrypted with Windows DPAPI in `settings.json` beside the app. It
-is never stored in plain text and only leaves the machine in the API calls you
-are paying for. If a cloud call fails mid-session, the local models take over
-and the caption says so.
+The key is encrypted with Windows DPAPI in `settings.json`. It is never stored
+in plain text, is never shown back in the app, and only leaves the machine in
+the API calls you are paying for. If a cloud call fails mid-session, the local
+models take over and the caption says so.
 
-## Building
+## What the app writes
 
-```
-python build.py              # folder build
-python build.py --onefile    # single exe, slower to start
-python build.py --installer  # installer, the one to distribute
-```
+All of it sits in this folder and none of it is committed:
 
-The installer unpacks to `%LOCALAPPDATA%\Programs`, creates shortcuts,
-registers in Windows Settings, and pre-downloads the speech model. Translation
-packs are bundled, so translation works offline immediately.
-
-The build currently packages the Tk front end. Packaging the Qt window is not
-done yet.
+| File | Holds |
+|---|---|
+| `translator.log` | Every phrase, transcript, translation and failure, with timing. The first place to look when captions stop |
+| `settings.json` | The AI provider and encrypted key |
+| `transcripts/` | Session transcripts |
 
 ## Known limitations
 
@@ -132,14 +118,7 @@ done yet.
   model size fast enough for live use. Use a cloud engine for Kiswahili.
 * **Kiswahili idiom translates weakly offline.** "Habari za asubuhi" becomes
   "News in the morning".
-* **Unsigned builds are blocked by Windows Smart App Control.** Running from
-  source works, since the Python interpreter is signed.
 * **Streaming captions need the local speech model.** With Google or Gemini as
   the speech engine, capture falls back to phrase mode.
-* The Tk window has no menu entry for streaming captions yet.
-
-## Logs
-
-`translator.log` sits beside the app and records every phrase, transcript,
-translation and failure with timing. It is the first place to look when
-captions stop appearing.
+* **There is no installer yet.** Sharing the app with other people is a
+  separate piece of work.

@@ -1,12 +1,10 @@
-"""Live Translator with the Qt caption window.
+"""The Qt front end: the caption window, its menu, and the event loop.
 
-Same application as translation.py: the same audio capture, the same Whisper
-recognition, the same local and cloud translation engines. Only the window is
-different. QtTranslator inherits FloatingTranslator and replaces the Tk half -
-the window, the painting, the input handling and the settings surface - while
-the capture and recognition half is used exactly as it stands.
+QtTranslator is the engine wearing a window. It inherits LiveTranslator whole
+and overrides only the hooks the engine leaves to a front end: building the
+window, hopping onto the UI thread, and showing text and status.
 
-Run:  pythonw qt_app.py        (or: python qt_app.py, to see tracebacks)
+Run:  pythonw -m livetranslator     (or python -m livetranslator, for tracebacks)
 """
 import sys
 import traceback
@@ -14,12 +12,15 @@ import traceback
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMenu
 
-import translation as core
-from translation import (
-    ENGINE, DEFAULT_INPUT, LANGUAGES, LANG_NAMES, RESPONSE_PRESETS,
-    SENSITIVITY_PRESETS, WHISPER_MODELS, CAPTURE_MODES, log,
+from ..audio import list_input_devices, list_loopback_devices
+from ..config import (
+    CAPTURE_MODES, DEFAULT_INPUT, LANG_NAMES, LANGUAGES, RESPONSE_PRESETS,
+    SENSITIVITY_PRESETS, WAVE_SCALE_FLOOR, WHISPER_MODELS,
 )
-from qt_ui import CaptionWindow, SIZE_PRESETS
+from ..engine import LiveTranslator, apply_startup_options
+from ..log import log
+from .ai_dialog import AIKeyDialog
+from .caption import DEFAULT_PRESET, SIZE_PRESETS, CaptionWindow
 
 
 MENU_QSS = """
@@ -63,19 +64,16 @@ class Bridge(QObject):
             log("UI callback failed:\n" + traceback.format_exc())
 
 
-class QtTranslator(core.FloatingTranslator):
+class QtTranslator(LiveTranslator):
     """The app, wearing the Qt window."""
 
-    def __init__(self, engine_name=ENGINE, input_mode=DEFAULT_INPUT):
-        super().__init__(engine_name=engine_name, input_mode=input_mode)
+    def __init__(self, input_mode=DEFAULT_INPUT):
+        super().__init__(input_mode=input_mode)
 
     # -- the window --------------------------------------------------------
     def build_ui(self):
         self.bridge = Bridge()
-        # font_for() picks a face per message; Qt resolves families by name
-        self.cjk_font = "Microsoft JhengHei UI"
-        self.latin_font = "Segoe UI"
-        self.font_family = self.latin_font
+        self._size_name = DEFAULT_PRESET
 
         self.win = CaptionWindow(controller=self)
         # init_state() already put the app in its starting state; the window
@@ -99,7 +97,7 @@ class QtTranslator(core.FloatingTranslator):
         setter, so both are read here instead of pushed. It is already the
         meter's tick, so the extra check costs nothing.
         """
-        scale = max(core.WAVE_SCALE_FLOOR, self._level_scale)
+        scale = max(WAVE_SCALE_FLOOR, self._level_scale)
         self.win.set_level(min(1.0, self._level_raw / scale))
         if self.win._listening != self._listening:
             self.win.set_listening(self._listening)
@@ -224,6 +222,16 @@ class QtTranslator(core.FloatingTranslator):
 
         self.on_ui(apply)
 
+    def open_ai_dialog(self):
+        dlg = AIKeyDialog(self.win, self.ai_provider, bool(self.ai_key),
+                          self.ai_covers_speech, self._save_ai)
+        dlg.exec()
+
+    def _save_ai(self, provider, key, covers_speech):
+        # An empty field keeps the saved key, including while switched off,
+        # so turning AI back on later does not mean pasting it again.
+        self.apply_ai_settings(provider, key or self.ai_key, covers_speech)
+
     def open_transcript_folder(self):
         import os
         folder = self.session.folder
@@ -250,6 +258,8 @@ class QtTranslator(core.FloatingTranslator):
         self._choice_menu(m.addMenu("Sensitivity"), SENSITIVITY_PRESETS,
                           self.sensitivity, self.set_sensitivity)
         self._speech_menu(m.addMenu("Speech engine"))
+        ai = m.addAction("AI translation...")
+        ai.triggered.connect(self.open_ai_dialog)
         m.addSeparator()
         self._choice_menu(m.addMenu("Size"), SIZE_PRESETS,
                           self._size_name, self.set_size)
@@ -273,8 +283,8 @@ class QtTranslator(core.FloatingTranslator):
         return act
 
     def _device_menu(self, menu):
-        mics = list(core.list_input_devices())
-        loops = list(core.list_loopback_devices())
+        mics = list(list_input_devices())
+        loops = list(list_loopback_devices())
         if not mics and not loops:
             menu.addAction("No input devices found").setEnabled(False)
             return
@@ -327,7 +337,7 @@ def main():
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(True)
     translator = QtTranslator()
-    core.apply_startup_options(translator, sys.argv)
+    apply_startup_options(translator, sys.argv)
     translator.run()
 
 
