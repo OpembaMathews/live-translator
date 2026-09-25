@@ -222,6 +222,17 @@ class QtTranslator(LiveTranslator):
 
         self.on_ui(apply)
 
+    def open_reader(self):
+        """The document reader, in its own window beside the captions."""
+        from ..reader.voice import Voice
+        from .reader_window import ReaderWindow
+
+        if getattr(self, "reader", None) is None:
+            self.reader = ReaderWindow(Voice)
+        self.reader.show()
+        self.reader.raise_()
+        self.reader.activateWindow()
+
     def open_ai_dialog(self):
         dlg = AIKeyDialog(self.win, self.ai_provider, bool(self.ai_key),
                           self.ai_covers_speech, self._save_ai)
@@ -260,6 +271,9 @@ class QtTranslator(LiveTranslator):
         self._speech_menu(m.addMenu("Speech engine"))
         ai = m.addAction("AI translation...")
         ai.triggered.connect(self.open_ai_dialog)
+        m.addSeparator()
+        paper = m.addAction("Read a paper...")
+        paper.triggered.connect(self.open_reader)
         m.addSeparator()
         self._choice_menu(m.addMenu("Size"), SIZE_PRESETS,
                           self._size_name, self.set_size)
