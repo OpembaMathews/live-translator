@@ -50,6 +50,9 @@ class Checked(Translator):
     DANGLING = re.compile(r"[,\uff0c\u3001;\uff1b:\uff1a]\s*$")
     CLAUSE = re.compile(r",\s+(?=\w)")
     ENDINGS = "\u3002.!?\uff01\uff1f"
+    # A clause often comes back with its own comma attached; joining
+    # without trimming put ",，" in the middle of the sentence.
+    TRIM = ENDINGS + ",\uff0c\u3001;\uff1b:\uff1a "
     JOIN = "\uff0c"          # the Chinese comma joins clauses back together
 
     def __init__(self, engine):
@@ -84,7 +87,7 @@ class Checked(Translator):
         pieces = []
         for part in parts:
             got = self.engine.translate(part, source, target).strip()
-            got = got.rstrip(self.ENDINGS).strip()
+            got = got.rstrip(self.TRIM).strip()
             if got:
                 pieces.append(got)
         if not pieces:
