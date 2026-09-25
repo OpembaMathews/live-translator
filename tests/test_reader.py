@@ -284,3 +284,52 @@ def test_the_window_opens_inside_the_usable_screen():
     assert frame.width() <= usable.width()
     assert usable.contains(frame), "the window hangs off the screen"
     window.close()
+
+
+# --- how much of a page you see -------------------------------------------
+def open_window(tmp_path, pages=3):
+    """A reader window with a small generated paper open in it."""
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import ReaderWindow
+
+    make_pdf(tmp_path, pages=pages)          # writes paper.pdf
+    path = str(tmp_path / "paper.pdf")
+    window = ReaderWindow(voice_factory=lambda: None)
+    window.show()
+    app.processEvents()
+    window.open(path)
+    for _ in range(3):
+        window.fit_pages()
+        app.processEvents()
+    return app, window
+
+
+def test_a_whole_page_is_visible_by_default(tmp_path):
+    app, window = open_window(tmp_path)
+    page = window.doc[0].rect
+    height = page.height * window.view.scale
+    assert window.fit_mode == "page"
+    assert height <= window.scroll.viewport().height() + 1, \
+        "the page is taller than the view, so it cannot be seen whole"
+    assert window.view.width() <= window.scroll.viewport().width() + 1, \
+        "the page is wider than the view"
+    window.close()
+
+
+def test_resizing_by_hand_switches_to_filling_the_width(tmp_path):
+    app, window = open_window(tmp_path)
+    window._sizing_itself = False          # what a drag of the grip looks like
+    window.resize(window.width() + 60, window.height() - 40)
+    app.processEvents()
+    for _ in range(2):
+        window.fit_pages()
+        app.processEvents()
+    page = window.doc[0].rect
+    assert window.fit_mode == "width"
+    assert page.width * window.view.scale > window.scroll.viewport().width() * 0.9, \
+        "width mode should fill the view"
+    assert window.view.width() <= window.scroll.viewport().width() + 1, \
+        "filling the width must not cause sideways scrolling"
+    window.close()

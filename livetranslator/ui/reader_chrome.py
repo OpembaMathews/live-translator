@@ -18,7 +18,7 @@ CORNER = 18
 QSS = """
 QWidget#panel { background: transparent; }
 QLabel { color: #DCE8F4; font-size: 10pt; }
-QLabel#title { color: #FAFCFF; font-size: 14pt; font-weight: 600; }
+QLabel#title { color: #FAFCFF; font-size: 12.5pt; font-weight: 600; }
 QLabel#subtitle, QLabel#meta, QLabel#left, QLabel#right { color: #6E8CAB; font-size: 9pt; }
 QLabel#filename { color: #FAFCFF; font-size: 11pt; font-weight: 600; }
 QLabel#pill {
@@ -26,8 +26,8 @@ QLabel#pill {
     padding: 6px 16px; font-size: 9.5pt;
 }
 QLabel#pdfbadge {
-    color: #FFFFFF; background-color: #C8362F; border-radius: 9px;
-    padding: 10px 8px; font-size: 9pt; font-weight: 700;
+    color: #FFFFFF; background-color: #C8362F; border-radius: 8px;
+    padding: 7px 8px; font-size: 8.5pt; font-weight: 700;
 }
 QFrame#card {
     background-color: #12212F; border: 1px solid #1E2C3C; border-radius: 14px;
@@ -56,8 +56,8 @@ QPushButton#step {
 QPushButton#step:hover { color: #FFFFFF; background-color: #1B2E42; }
 QPushButton#step:disabled { color: #40566E; background: transparent; }
 QPushButton#play {
-    background-color: #1B77C4; color: #FFFFFF; font-size: 15pt; font-weight: 600;
-    border-radius: 25px; min-width: 50px; min-height: 50px; padding: 0;
+    background-color: #1B77C4; color: #FFFFFF; font-size: 13pt; font-weight: 600;
+    border-radius: 21px; min-width: 42px; min-height: 42px; padding: 0;
 }
 QPushButton#play:hover { background-color: #2A8BDC; }
 QPushButton#play:disabled { background-color: #17324B; color: #40566E; }

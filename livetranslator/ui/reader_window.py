@@ -87,16 +87,20 @@ class PageView(QWidget):
         self.setFixedSize(width, max(y - PAGE_GAP, 1))
         self.update()
 
-    def fit(self, available):
-        """Scale the pages to the width of the view, within reason.
+    def fit(self, width, height=None, mode="page"):
+        """Scale the pages to the view.
 
-        A page at 130 dpi is wider than the window, and reading a paper while
-        scrolling sideways is miserable.
+        "page" shows a whole page at once, which is how a paper is meant to
+        be seen. "width" fills the width and scrolls, which gives larger text
+        and is what the window switches to once it has been resized by hand.
         """
-        if self.doc is None or available < 200:
+        if self.doc is None or width < 200:
             return False
-        scale = (available - 2 * SIDE_MARGIN) / self.doc[0].rect.width
-        scale = max(0.5, min(scale, 2.5))
+        first = self.doc[0].rect
+        scale = (width - 2 * SIDE_MARGIN) / first.width
+        if mode == "page" and height:
+            scale = min(scale, (height - 2 * SIDE_MARGIN) / first.height)
+        scale = max(0.2, min(scale, 2.5))
         if abs(scale - self.scale) < 0.01:
             return False
         self.scale = scale
@@ -217,6 +221,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.doc = None
         self.path = ""
         self._drag_from = None
+        self._sizing_itself = True     # resizes it makes itself, not the user
 
         self.setWindowTitle("PDF Reader & AI Voice")
         self.setWindowIcon(chrome.app_icon())
@@ -228,8 +233,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         panel = chrome.Panel()
         panel.setObjectName("panel")
         outer = QVBoxLayout(panel)
-        outer.setContentsMargins(20, 16, 20, 18)
-        outer.setSpacing(14)
+        outer.setContentsMargins(14, 10, 14, 10)
+        outer.setSpacing(8)
         outer.addLayout(self.build_header())
         outer.addWidget(self.build_file_card())
         outer.addWidget(self.build_pages(), 1)
@@ -247,6 +252,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self._shown = -1
         self._start_at = 0        # where Read begins, set by a click
         self._seeking = False
+        self.fit_mode = "page"    # until the window is resized by hand
 
         # Space is what a reader reaches for; the arrows step a sentence.
         for key, action in (("Space", self.toggle),
@@ -287,8 +293,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
     def build_file_card(self):
         frame = chrome.card()
         row = QHBoxLayout(frame)
-        row.setContentsMargins(14, 12, 14, 12)
-        row.setSpacing(12)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(10)
         badge = QLabel("PDF")
         badge.setObjectName("pdfbadge")
         row.addWidget(badge)
@@ -313,10 +319,10 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         return frame
 
     def build_pages(self):
-        frame = QFrame()
+        frame = self.paper = QFrame()
         frame.setObjectName("paper")
         inner = QVBoxLayout(frame)
-        inner.setContentsMargins(10, 10, 10, 10)
+        inner.setContentsMargins(6, 6, 6, 6)
         self.view = PageView()
         self.view.clicked.connect(self.jump_to_point)
         self.scroll = QScrollArea()
@@ -326,11 +332,21 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.scroll.verticalScrollBar().valueChanged.connect(
             lambda _v: self.update_page_pill())
         inner.addWidget(self.scroll)
-        return frame
+
+        # Stretches either side so the card centres when it is narrowed to
+        # wrap a page, and still fills the window when it is not. Aligning
+        # the card instead would stop it expanding at all.
+        holder = QWidget()
+        row = self.paper_row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addStretch(1)
+        row.addWidget(frame, 10)
+        row.addStretch(1)
+        return holder
 
     def build_transport(self):
         column = QVBoxLayout()
-        column.setSpacing(10)
+        column.setSpacing(6)
 
         self.progress = QSlider(Qt.Orientation.Horizontal)
         self.progress.setEnabled(False)
@@ -394,9 +410,16 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         area = screen.availableGeometry()
         width = min(want[0], int(area.width() * 0.96))
         height = min(want[1], int(area.height() * 0.96))
+        self._sizing_itself = True
         self.resize(width, height)
         self.move(area.x() + (area.width() - width) // 2,
                   area.y() + (area.height() - height) // 2)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Opening resizes the window several times before it settles; only
+        # resizes after that are the user's.
+        QTimer.singleShot(400, lambda: setattr(self, "_sizing_itself", False))
 
     # -- the frameless window ---------------------------------------------
     def mousePressEvent(self, event):
@@ -465,11 +488,36 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
 
     def fit_pages(self):
         """Scale pages to the window, keeping the marked sentence in view."""
-        if self.view.fit(self.scroll.viewport().width())                 and getattr(self, "_marked", None):
+        view = self.scroll.viewport()
+        # Both modes measure the window, not the viewport. The card's width
+        # is set from the result, so measuring the viewport would feed back:
+        # a narrower card, a smaller page, a narrower card again. It also
+        # lags a mode change by one pass, because the card is still the old
+        # width when the fit runs.
+        page_mode = self.fit_mode == "page"
+        # The stretches either side centre a narrowed card; in width mode
+        # they must collapse or the card cannot use the whole window.
+        self.paper_row.setStretch(0, 1 if page_mode else 0)
+        self.paper_row.setStretch(2, 1 if page_mode else 0)
+        room = self.centralWidget().width() - (40 if page_mode else 64)
+        changed = self.view.fit(room, view.height(), self.fit_mode)
+        # Showing a whole page leaves width to spare, so the card wraps the
+        # page instead of framing it with empty space.
+        if self.doc is not None and self.fit_mode == "page":
+            self.paper.setMaximumWidth(
+                int(self.doc[0].rect.width * self.view.scale) + 26)
+        else:
+            self.paper.setMaximumWidth(16777215)
+        if changed and getattr(self, "_marked", None):
             self.mark_item(self._marked, follow=True)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # A whole page by default; once the window has been resized by hand,
+        # the pages fill the width instead, which is what that resize is
+        # usually asking for.
+        if not self._sizing_itself:
+            self.fit_mode = "width"
         self.fit_timer.start()
 
     # -- playing -----------------------------------------------------------
