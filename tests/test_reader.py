@@ -166,20 +166,125 @@ def test_a_merged_pair_does_not_shift_every_later_word():
     assert words[1].start < words[2].start, "words must stay in order"
 
 
-# --- merging highlight boxes ----------------------------------------------
-def test_boxes_on_one_line_merge_into_one():
-    from livetranslator.ui.reader_window import merge_lines
-    # a search returns a box per fragment; the line should end up as one
-    row = merge_lines([(10, 100, 40, 112), (42, 100, 90, 112),
-                       (92, 101, 130, 113)])
+def a_page_view(path):
+    """A PageView with a PDF loaded. It is a widget, so Qt must be up."""
+    import pymupdf
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import PageView
+
+    view = PageView()
+    view.load(pymupdf.open(path))
+    return view
+
+
+# --- highlighting the sentence being read ---------------------------------
+def test_characters_on_one_line_become_one_highlight():
+    from livetranslator.ui.reader_window import rows_of
+    row = rows_of([(10, 100, 40, 112), (40, 100, 90, 112),
+                   (90, 101, 130, 113)])
     assert row == [(10, 100, 130, 113)]
 
 
 def test_separate_lines_stay_separate():
-    from livetranslator.ui.reader_window import merge_lines
-    rows = merge_lines([(10, 100, 90, 112), (10, 120, 60, 132)])
+    from livetranslator.ui.reader_window import rows_of
+    rows = rows_of([(10, 100, 90, 112), (10, 120, 60, 132)])
     assert len(rows) == 2
     assert rows[0][1] < rows[1][1], "lines keep their order down the page"
+
+
+def test_a_kerned_letter_does_not_start_a_new_line():
+    """A wide "T" overlaps the letter after it, which split "Technology"."""
+    from livetranslator.ui.reader_window import rows_of
+    rows = rows_of([(10, 100, 40, 121), (38, 100, 60, 121)])
+    assert rows == [(10, 100, 60, 121)]
+
+
+def test_the_gutter_of_a_two_column_page_is_not_bridged():
+    """Two columns put text at the same height on both sides of a gap.
+
+    One rectangle across both would tint the middle of the page, so a long
+    jump to the right ends the line even when the height matches.
+    """
+    from livetranslator.ui.reader_window import rows_of
+    rows = rows_of([(40, 100, 250, 112), (320, 100, 520, 112)])
+    assert len(rows) == 2, "the highlight jumped the gutter"
+
+
+def test_a_title_is_highlighted_to_its_last_word(tmp_path):
+    """Searching for the printed text missed a title on three counts.
+
+    The reader adds a full stop so the voice pauses, the page breaks the
+    title across lines, and search_for found neither -- so only the first
+    seven words were tinted.
+    """
+    import pymupdf
+
+    from livetranslator.reader.player import Passage
+    title = ("Selection, Optimization, and Compensation Strategies "
+             "Used by Older Adults to Live Well With Technology")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    box = pymupdf.Rect(40, 60, 300, 160)
+    page.insert_textbox(box, title, fontsize=17, fontname="helv")
+    path = str(tmp_path / "title.pdf")
+    doc.save(path)
+
+    view = a_page_view(path)
+    item = Passage(0, title, title + ".", 0, tuple(box), "title")
+    boxes = view._find_boxes(item)
+
+    def tinted(word):
+        spot = view.doc[0].search_for(word)[0]
+        return any(b[0] - 1 <= spot.x0 and spot.x1 <= b[2] + 1
+                   and b[1] - 1 <= spot.y0 and spot.y1 <= b[3] + 1
+                   for b in boxes)
+
+    assert len(boxes) > 1, "the title wraps, so it needs a box per line"
+    assert boxes != [tuple(box)], "it fell back to the block"
+    assert tinted("Selection"), "the title does not start tinted"
+    assert tinted("Technology"), "the last word of the title is not tinted"
+
+
+def test_a_sentence_broken_across_lines_still_matches(tmp_path):
+    """A hyphenated word is one word in the plan and two on the page."""
+    import pymupdf
+
+    from livetranslator.reader.player import Passage
+    doc = pymupdf.open()
+    page = doc.new_page()
+    box = pymupdf.Rect(40, 60, 200, 200)
+    page.insert_textbox(box, "Older adults described their own well-being "
+                             "as the reason they kept going.",
+                        fontsize=11, fontname="helv")
+    path = str(tmp_path / "wrap.pdf")
+    doc.save(path)
+
+    view = a_page_view(path)
+    item = Passage(0, "", "Older adults described their own well-being as "
+                          "the reason they kept going.", 0, tuple(box), "text")
+    assert view._find_boxes(item) != [tuple(box)], "it fell back to the block"
+
+
+def test_the_nearer_of_two_identical_sentences_is_chosen(tmp_path):
+    """"Yeah." appears all over an interview paper; tint the right one."""
+    import pymupdf
+
+    from livetranslator.reader.player import Passage
+    doc = pymupdf.open()
+    page = doc.new_page()
+    for y in (100, 400):
+        page.insert_text((60, y), "It was the same answer again",
+                         fontsize=11, fontname="helv")
+    path = str(tmp_path / "twice.pdf")
+    doc.save(path)
+
+    view = a_page_view(path)
+    item = Passage(0, "", "It was the same answer again", 0,
+                   (60, 390, 300, 404), "text")
+    boxes = view._find_boxes(item)
+    assert boxes[0][1] > 300, f"tinted the first copy, not the one read: {boxes}"
 
 
 # --- links, which are unlistenable when read out in full -------------------

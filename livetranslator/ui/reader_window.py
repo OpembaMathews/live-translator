@@ -8,6 +8,7 @@ Pages are rendered once, lazily, and cached. A 12-page paper at 130 dpi is a
 few megabytes; rendering every page up front would stall the open.
 """
 import os
+import re
 
 import pymupdf
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
@@ -37,26 +38,63 @@ SPEEDS = ("0.8x", "0.9x", "1.0x", "1.1x", "1.25x", "1.5x")
 
 
 
-def merge_lines(boxes):
-    """Join boxes that sit on the same line of text.
+def squash(text):
+    """Letters and digits only, lowercased.
 
-    A search returns a box per fragment it matched, so a sentence comes back
-    as a row of little boxes. Drawn separately they look like every word is
-    boxed; merged, each line of the sentence gets one highlight.
+    Highlighting compares this rather than the text itself, so a sentence
+    still matches the page when it was hyphenated across a line break, when
+    the reader added a full stop to a title, or when the two differ only in
+    quotation marks and spacing.
+    """
+    return "".join(c.lower() for c in text if c.isalnum())
+
+
+def rows_of(boxes):
+    """Characters that run along one line, as one rectangle per line.
+
+    The boxes arrive in reading order, so a line ends where the next
+    character is on a different line or starts a long way to the right --
+    which is what the gutter of a two-column paper looks like, and which
+    must not be bridged by a single highlight.
     """
     rows = []
-    for x0, y0, x1, y1 in sorted(boxes, key=lambda b: (round(b[1], 1), b[0])):
-        for row in rows:
-            overlap = min(y1, row[3]) - max(y0, row[1])
-            if overlap > 0.6 * min(y1 - y0, row[3] - row[1]):
-                row[0] = min(row[0], x0)
-                row[1] = min(row[1], y0)
-                row[2] = max(row[2], x1)
-                row[3] = max(row[3], y1)
-                break
-        else:
-            rows.append([x0, y0, x1, y1])
+    for x0, y0, x1, y1 in boxes:
+        if rows:
+            row = rows[-1]
+            height = min(y1 - y0, row[3] - row[1])
+            level = min(y1, row[3]) - max(y0, row[1]) > 0.6 * height
+            # Kerning lets a wide glyph ("T") overlap the letter after it,
+            # so a small backward step is still the same line.
+            next_to = -0.5 * height <= x0 - row[2] < 3 * height
+            if level and next_to:
+                row[0], row[1] = min(row[0], x0), min(row[1], y0)
+                row[2], row[3] = max(row[2], x1), max(row[3], y1)
+                continue
+        rows.append([x0, y0, x1, y1])
     return [tuple(r) for r in rows]
+
+
+def text_map(page, body_size=document.BODY_SIZE):
+    """The page's letters and digits in reading order, each with its box.
+
+    Built the way the reading plan was built: the small raised numbers that
+    block_text() keeps out of the spoken sentence are kept out here too, so
+    "Wei Qi Koh, PhD" matches a page that prints "Wei Qi Koh1, PhD".
+    """
+    stream, boxes = [], []
+    for block in page.get_text("rawdict")["blocks"]:
+        for line in block.get("lines", []):
+            for span in line["spans"]:
+                chars = span.get("chars", ())
+                text = "".join(c["c"] for c in chars)
+                if (span["size"] < body_size * 0.8
+                        and re.fullmatch(r"[\d,\s*\u2020]+", text.strip())):
+                    continue
+                for c in chars:
+                    if c["c"].isalnum():
+                        stream.append(c["c"].lower())
+                        boxes.append(tuple(c["bbox"]))
+    return "".join(stream), boxes
 
 
 class PageView(QWidget):
@@ -70,12 +108,14 @@ class PageView(QWidget):
         self.scale = DPI / 72.0
         self._pixmaps = {}
         self._boxes = {}
+        self._maps = {}
         self._tops = []                # y of each page in this widget
         self.mark = None               # (page, [boxes in PDF points])
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def load(self, doc):
         self.doc = doc
+        self._maps.clear()
         self.relayout()
 
     def relayout(self):
@@ -138,32 +178,45 @@ class PageView(QWidget):
             self._boxes[item.index] = self._find_boxes(item)
         return self._boxes[item.index]
 
+    def text_map(self, page):
+        if page not in self._maps:
+            self._maps[page] = text_map(self.doc[page])
+        return self._maps[page]
+
     def _find_boxes(self, item):
         """Where a sentence sits on the page, line by line.
 
-        The block box would tint a whole abstract at once. Searching for the
-        sentence gives its own lines instead; if the search fails, which
-        happens when a word was hyphenated across a line break, the block is
-        the fallback.
+        The block box would tint a whole abstract at once, so the sentence is
+        looked for among the page's own characters. Comparing squashed text
+        finds it even when the page breaks a word across two lines; when it
+        genuinely is not there -- a sentence continued from the page before
+        -- the block is the fallback.
         """
         if self.doc is None:
             return [item.bbox]
-        page = self.doc[item.page]
-        words = item.source.split()
-        # The whole sentence first; then its opening and closing words, which
-        # is what survives when something in the middle was hyphenated across
-        # a line break and so is not on the page as written.
-        for attempt in (words, words[:7], words[-7:]):
-            phrase = " ".join(attempt).strip(" ,;:")
-            if len(phrase) < 8:
-                continue
-            try:
-                found = page.search_for(phrase)
-            except Exception:
-                found = []
-            if found:
-                return merge_lines(tuple(r) for r in found)
-        return [item.bbox]
+        stream, boxes = self.text_map(item.page)
+        wanted = squash(item.source)
+        if len(wanted) < 6:
+            return [item.bbox]
+        at = self._nearest(stream, wanted, boxes, item.bbox)
+        if at < 0:
+            return [item.bbox]
+        return rows_of(boxes[at:at + len(wanted)])
+
+    @staticmethod
+    def _nearest(stream, wanted, boxes, bbox):
+        """The occurrence closest to where the reading plan said it was.
+
+        A short sentence ("Results.") can appear on a page several times, and
+        the highlight has to land on the one being read.
+        """
+        best, distance, at = -1, None, stream.find(wanted)
+        while at >= 0:
+            gap = abs(boxes[at][1] - bbox[1])
+            if distance is None or gap < distance:
+                best, distance = at, gap
+            at = stream.find(wanted, at + 1)
+        return best
 
     def pixmap(self, n):
         """The page, rendered for this display.
