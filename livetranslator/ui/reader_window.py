@@ -24,6 +24,7 @@ from ..log import log
 from . import reader_chrome as chrome
 from ..reader import document
 from ..reader.player import Player, passages
+from ..reader.memory import write_wanted
 from ..reader.translated import Translation, voices_for
 
 DPI = 130
@@ -730,7 +731,25 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
     def current_index(self):
         return self.player.position()[0] if self.player else self._start_at
 
+    def save_corrections(self):
+        """Write out what did not translate cleanly, ready to be corrected.
+
+        A student cannot fix these, but somebody who reads the language can,
+        and once a sentence is corrected it is right for good.
+        """
+        if self.into is None or not self.path:
+            return
+        wanted = self.into.wanted()
+        if not wanted:
+            return
+        where = write_wanted(os.path.basename(self.path), wanted,
+                             "en", self.language_code())
+        if where:
+            self.status.setText(
+                f"{len(wanted)} sentences saved for correction")
+
     def stop(self):
+        self.save_corrections()
         self.follow.stop()
         if self.player is not None:
             self.player.stop()

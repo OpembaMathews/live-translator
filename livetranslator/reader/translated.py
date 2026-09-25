@@ -13,6 +13,7 @@ import threading
 
 from ..log import log
 from ..translate import Checked
+from .memory import Memory
 
 # Kokoro names a voice for its language and its speaker: "a" is American,
 # "b" British and "z" Mandarin, then "f" or "m". Three to a language is
@@ -50,8 +51,11 @@ class Translation:
     instead and the reason is logged once.
     """
 
-    def __init__(self, target, engine, voice=None, source="en"):
+    def __init__(self, target, engine, voice=None, source="en", memory=None):
         self.target = target
+        # An approved translation always wins. The engine is only asked
+        # about sentences nobody has answered yet.
+        self.memory = memory if memory is not None else Memory()
         # Every translation is checked, and one that broke off is retried a
         # clause at a time. What still fails is remembered, so the reader can
         # say so rather than read out half a sentence as if it were whole.
@@ -60,6 +64,7 @@ class Translation:
         self.voice_name = voice or default_voice(target)
         self.lang = PHONEMES[target]
         self._done = {}
+        self._source = {}
         self._doubted = set()
         self._lock = threading.Lock()
         self._complained = False
@@ -69,11 +74,24 @@ class Translation:
         with self._lock:
             return index in self._doubted
 
+    def wanted(self):
+        """The sentences the checker could not trust, with its best attempt."""
+        with self._lock:
+            doubted = sorted(self._doubted)
+            return [(self._source[i], self._done[i]) for i in doubted
+                    if i in self._done]
+
     def text_for(self, passage):
         """The passage in the target language, or the original if it fails."""
         with self._lock:
             if passage.index in self._done:
                 return self._done[passage.index]
+        approved = self.memory.get(passage.source, self.source, self.target)
+        if approved:
+            with self._lock:
+                self._done[passage.index] = approved
+                self._source[passage.index] = passage.source
+            return approved
         try:
             got = self.engine.attempt(passage.source, self.source, self.target)
             said = got.text.strip()
@@ -89,6 +107,7 @@ class Translation:
         said = said or passage.source
         with self._lock:
             self._done[passage.index] = said
+            self._source[passage.index] = passage.source
         return said
 
     def say(self, voice, passage, speed):

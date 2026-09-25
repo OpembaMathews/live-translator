@@ -2,6 +2,10 @@
 translator.log
 settings.json
 transcripts/
+# What this machine has learned, and what is still waiting to be
+# corrected. The shipped seed lives in data/ and is tracked.
+/translation-memory.json
+/to-correct/
 __pycache__/
 *.pyc
 
