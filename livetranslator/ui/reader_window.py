@@ -27,6 +27,10 @@ from ..reader.player import Player, passages
 DPI = 130
 PAGE_GAP = 14
 SIDE_MARGIN = 10
+# Filling a 1400-pixel window would render a page at 2.3x, with body text
+# larger than a heading. Acrobat, reading the same paper, settles near 1.6x,
+# so the page stops growing there and is centred in whatever is left over.
+READABLE = 1.7
 HIGHLIGHT = QColor(56, 189, 248, 62)       # the app's cyan, kept light
 HIGHLIGHT_EDGE = QColor(56, 189, 248, 90)
 SPEEDS = ("0.8x", "0.9x", "1.0x", "1.1x", "1.25x", "1.5x")
@@ -87,12 +91,13 @@ class PageView(QWidget):
         self.setFixedSize(width, max(y - PAGE_GAP, 1))
         self.update()
 
-    def fit(self, width, height=None, mode="page"):
+    def fit(self, width, height=None, mode="width"):
         """Scale the pages to the view.
 
-        "page" shows a whole page at once, which is how a paper is meant to
-        be seen. "width" fills the width and scrolls, which gives larger text
-        and is what the window switches to once it has been resized by hand.
+        "width" is how a paper is actually read: the page fills the width, up
+        to the point where the text stops getting easier to read, and you
+        scroll. "page" shows a whole page at once, which is useful to see
+        where you are but leaves the text small on a laptop screen.
         """
         if self.doc is None or width < 200:
             return False
@@ -100,6 +105,8 @@ class PageView(QWidget):
         scale = (width - 2 * SIDE_MARGIN) / first.width
         if mode == "page" and height:
             scale = min(scale, (height - 2 * SIDE_MARGIN) / first.height)
+        else:
+            scale = min(scale, READABLE)
         scale = max(0.2, min(scale, 2.5))
         if abs(scale - self.scale) < 0.01:
             return False
@@ -221,7 +228,6 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.doc = None
         self.path = ""
         self._drag_from = None
-        self._sizing_itself = True     # resizes it makes itself, not the user
 
         self.setWindowTitle("PDF Reader & AI Voice")
         self.setWindowIcon(chrome.app_icon())
@@ -252,7 +258,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self._shown = -1
         self._start_at = 0        # where Read begins, set by a click
         self._seeking = False
-        self.fit_mode = "page"    # until the window is resized by hand
+        self.fit_mode = "width"   # the fit button switches to "page"
 
         # Space is what a reader reaches for; the arrows step a sentence.
         for key, action in (("Space", self.toggle),
@@ -313,6 +319,10 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.page_pill = QLabel("Page 0 / 0")
         self.page_pill.setObjectName("pill")
         row.addWidget(self.page_pill)
+        self.fit_button = QPushButton("Whole page")
+        self.fit_button.setToolTip("Show a whole page at once, or fill the width")
+        self.fit_button.clicked.connect(self.switch_fit)
+        row.addWidget(self.fit_button)
         self.open_button = QPushButton("Open a PDF")
         self.open_button.clicked.connect(self.choose_file)
         row.addWidget(self.open_button)
@@ -400,8 +410,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.status = self.left_label
         return column
 
-    def fit_to_screen(self, want=(1040, 980)):
-        """Open at a comfortable size, but never taller than the screen.
+    def fit_to_screen(self, want=(1400, 960)):
+        """Open on most of the screen, but never taller than it.
 
         A frameless window is not fitted by Windows, so asking for 980 on a
         screen with 816 usable pixels put the controls below the taskbar.
@@ -410,16 +420,9 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         area = screen.availableGeometry()
         width = min(want[0], int(area.width() * 0.96))
         height = min(want[1], int(area.height() * 0.96))
-        self._sizing_itself = True
         self.resize(width, height)
         self.move(area.x() + (area.width() - width) // 2,
                   area.y() + (area.height() - height) // 2)
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        # Opening resizes the window several times before it settles; only
-        # resizes after that are the user's.
-        QTimer.singleShot(400, lambda: setattr(self, "_sizing_itself", False))
 
     # -- the frameless window ---------------------------------------------
     def mousePressEvent(self, event):
@@ -443,6 +446,13 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self._seeking = False
         if self.items:
             self.go_to(self.progress.value())
+
+    def switch_fit(self):
+        """Swap between filling the width and showing a whole page."""
+        self.fit_mode = "page" if self.fit_mode == "width" else "width"
+        self.fit_button.setText(
+            "Fill width" if self.fit_mode == "page" else "Whole page")
+        self.fit_pages()
 
     def update_page_pill(self):
         """Which page is under the top of the view."""
@@ -494,30 +504,22 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         # a narrower card, a smaller page, a narrower card again. It also
         # lags a mode change by one pass, because the card is still the old
         # width when the fit runs.
-        page_mode = self.fit_mode == "page"
-        # The stretches either side centre a narrowed card; in width mode
-        # they must collapse or the card cannot use the whole window.
-        self.paper_row.setStretch(0, 1 if page_mode else 0)
-        self.paper_row.setStretch(2, 1 if page_mode else 0)
-        room = self.centralWidget().width() - (40 if page_mode else 64)
+        room = self.centralWidget().width() - 64
         changed = self.view.fit(room, view.height(), self.fit_mode)
-        # Showing a whole page leaves width to spare, so the card wraps the
-        # page instead of framing it with empty space.
-        if self.doc is not None and self.fit_mode == "page":
-            self.paper.setMaximumWidth(
-                int(self.doc[0].rect.width * self.view.scale) + 26)
-        else:
-            self.paper.setMaximumWidth(16777215)
+        # Either mode can leave width to spare: a whole page always does, and
+        # a wide window does once the page has stopped growing. The card then
+        # wraps the page and the stretches either side centre it.
+        if self.doc is not None:
+            card = int(self.doc[0].rect.width * self.view.scale) + 26
+            spare = card < room
+            self.paper_row.setStretch(0, 1 if spare else 0)
+            self.paper_row.setStretch(2, 1 if spare else 0)
+            self.paper.setMaximumWidth(card if spare else 16777215)
         if changed and getattr(self, "_marked", None):
             self.mark_item(self._marked, follow=True)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # A whole page by default; once the window has been resized by hand,
-        # the pages fill the width instead, which is what that resize is
-        # usually asking for.
-        if not self._sizing_itself:
-            self.fit_mode = "width"
         self.fit_timer.start()
 
     # -- playing -----------------------------------------------------------

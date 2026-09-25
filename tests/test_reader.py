@@ -306,30 +306,52 @@ def open_window(tmp_path, pages=3):
     return app, window
 
 
-def test_a_whole_page_is_visible_by_default(tmp_path):
+def test_the_page_fills_the_width_by_default(tmp_path):
+    """A paper opens ready to read, not as a thumbnail.
+
+    Fitting a whole page on a 816-pixel screen rendered it 387 wide, which
+    is legible but nothing anyone would choose to read.
+    """
     app, window = open_window(tmp_path)
+    from livetranslator.ui import reader_window as rw
+
     page = window.doc[0].rect
-    height = page.height * window.view.scale
-    assert window.fit_mode == "page"
-    assert height <= window.scroll.viewport().height() + 1, \
-        "the page is taller than the view, so it cannot be seen whole"
-    assert window.view.width() <= window.scroll.viewport().width() + 1, \
-        "the page is wider than the view"
+    view = window.scroll.viewport()
+    assert window.fit_mode == "width"
+    shown = page.width * window.view.scale
+    assert shown > view.width() * 0.75 or window.view.scale >= rw.READABLE, \
+        "the page should fill the width, or have stopped at readable size"
+    assert window.view.width() <= view.width() + 1, \
+        "filling the width must not cause sideways scrolling"
     window.close()
 
 
-def test_resizing_by_hand_switches_to_filling_the_width(tmp_path):
+def test_the_text_stops_growing_when_the_window_is_wide(tmp_path):
+    """A very wide window centres the page instead of magnifying it."""
     app, window = open_window(tmp_path)
-    window._sizing_itself = False          # what a drag of the grip looks like
-    window.resize(window.width() + 60, window.height() - 40)
+    from livetranslator.ui import reader_window as rw
+
+    window.resize(2200, window.height())
     app.processEvents()
-    for _ in range(2):
+    for _ in range(3):
+        window.fit_pages()
+        app.processEvents()
+    assert window.view.scale <= rw.READABLE + 0.01
+    assert window.paper.maximumWidth() < window.centralWidget().width(), \
+        "with width to spare the page card should be centred, not stretched"
+    window.close()
+
+
+def test_the_button_switches_to_a_whole_page(tmp_path):
+    app, window = open_window(tmp_path)
+    window.switch_fit()
+    app.processEvents()
+    for _ in range(3):
         window.fit_pages()
         app.processEvents()
     page = window.doc[0].rect
-    assert window.fit_mode == "width"
-    assert page.width * window.view.scale > window.scroll.viewport().width() * 0.9, \
-        "width mode should fill the view"
-    assert window.view.width() <= window.scroll.viewport().width() + 1, \
-        "filling the width must not cause sideways scrolling"
+    assert window.fit_mode == "page"
+    assert page.height * window.view.scale <= window.scroll.viewport().height() + 1, \
+        "the page is taller than the view, so it cannot be seen whole"
+    assert window.view.width() <= window.scroll.viewport().width() + 1
     window.close()
