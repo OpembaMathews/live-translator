@@ -22,6 +22,8 @@ English is the pivot, so Chinese to Kiswahili works without a dedicated model.
 | [Troubleshooting](docs/troubleshooting.md) | Captions not appearing, garbled words, Smart App Control, microphone level |
 | [Improving accuracy](docs/improving-accuracy.md) | Where the errors come from, and what Google Cloud and other services would change |
 | [Offline voices research](docs/research/offline-tts-for-pdf-reader.md) | Natural text-to-speech for the planned PDF reader |
+| [macOS and Linux](docs/macos-and-linux.md) | Running it off Windows, and what system audio cannot do there |
+| [Building the installer](installer/README.md) | The Windows setup.exe, and why it downloads rather than bundles |
 
 ## Running it
 
