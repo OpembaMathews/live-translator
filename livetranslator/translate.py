@@ -124,10 +124,18 @@ class LeanEngine(Translator):
 
     @staticmethod
     def _roots():
-        """Where translation packs live: argostranslate's own install folder."""
-        root = (pathlib.Path.home() / ".local" / "share"
-                / "argos-translate" / "packages")
-        return [root] if root.exists() else []
+        """Where translation packs live.
+
+        The app's own folder first, because that is where it installs them,
+        then argostranslate's, so a machine that already had packs from
+        before keeps working without downloading them again.
+        """
+        from .paths import PACK_DIR
+
+        candidates = [pathlib.Path(PACK_DIR),
+                      pathlib.Path.home() / ".local" / "share"
+                      / "argos-translate" / "packages"]
+        return [root for root in candidates if root.exists()]
 
     @classmethod
     def _discover(cls):

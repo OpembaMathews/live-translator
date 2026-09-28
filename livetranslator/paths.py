@@ -16,3 +16,12 @@ SESSION_DIR = os.path.join(ROOT, "transcripts")
 MEMORY_SEED = os.path.join(ROOT, "data", "translation-memory.json")
 MEMORY_PATH = os.path.join(ROOT, "translation-memory.json")
 CORRECTIONS_DIR = os.path.join(ROOT, "to-correct")
+
+# Models are too big to ship inside an installer, so they are fetched on
+# first run into the user's own app-data folder rather than beside the code:
+# a program installed for everyone cannot write to its own directory.
+APP_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+    "LiveTranslator")
+TTS_DIR = os.path.join(APP_DIR, "tts-models")
+PACK_DIR = os.path.join(APP_DIR, "translate-packs")

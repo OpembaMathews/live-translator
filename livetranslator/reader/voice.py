@@ -12,8 +12,9 @@ import os
 import re
 from dataclasses import dataclass, field
 
-MODEL_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                         "LiveTranslator", "tts-models", "kokoro")
+from ..paths import TTS_DIR
+
+MODEL_DIR = os.path.join(TTS_DIR, "kokoro")
 MODEL = os.path.join(MODEL_DIR, "kokoro-v1.0.onnx")
 VOICES = os.path.join(MODEL_DIR, "voices-v1.0.bin")
 DEFAULT_VOICE = "af_heart"
@@ -59,8 +60,8 @@ class Voice:
         for path in (model, voices):
             if not os.path.exists(path):
                 raise FileNotFoundError(
-                    f"{path} is missing. Download the Kokoro model files into "
-                    f"{MODEL_DIR}.")
+                    f"{os.path.basename(path)} is missing. Run "
+                    f"'python -m livetranslator.models' to download it.")
         options = ort.SessionOptions()
         options.intra_op_num_threads = threads
         session = ort.InferenceSession(model, options,
