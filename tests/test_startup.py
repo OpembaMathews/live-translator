@@ -1,0 +1,74 @@
+"""What the app says between opening the microphone and the first caption.
+
+A real session captured thirteen phrases over thirty-nine seconds without
+showing anything: each one held no recognisable speech, so nothing reached
+the screen, and the status line said "Listening" throughout. That is
+indistinguishable from broken.
+"""
+from livetranslator.engine import LiveTranslator
+
+
+class Standin(LiveTranslator):
+    """The reporting, with the engine and the audio taken out from under it."""
+
+    def __init__(self):
+        self.said = []
+        self.paused = False
+        self._listening = True
+        self._level_raw = 0.0
+        self._captions_shown = 0
+        self._phrases_caught = 0
+
+    def show_status(self, text, busy=None):
+        self.said.append(text)
+
+
+def test_the_first_phrase_says_so():
+    """Silence while it works is what made the app look dead."""
+    app = Standin()
+    app.note_capture(2.0)
+    assert app.said, "capturing audio and saying nothing is the bug"
+    assert "Heard you" in app.said[0]
+
+
+def test_it_keeps_saying_so_while_nothing_is_recognised():
+    app = Standin()
+    for _ in range(10):
+        app.note_capture(2.0)
+    assert len(app.said) == 3, "a message at the first, fourth and tenth"
+    assert "10 phrases heard" in app.said[-1]
+    assert "none clear enough" in app.said[-1]
+
+
+def test_it_stops_once_captions_are_flowing():
+    """After the first caption the captions are the feedback."""
+    app = Standin()
+    app.note_capture(2.0)
+    app._captions_shown = 1
+    before = len(app.said)
+    for _ in range(20):
+        app.note_capture(2.0)
+    assert len(app.said) == before, "it must not talk over the captions"
+
+
+def test_stopping_and_starting_explains_itself_again():
+    app = Standin()
+    app.note_capture(2.0)
+    app._captions_shown = 3
+    app.note_capture(2.0)
+    assert len(app.said) == 1
+
+    # what toggle_listening does when it pauses
+    app._phrases_caught = 0
+    app._captions_shown = 0
+    app.note_capture(2.0)
+    assert len(app.said) == 2, "a new session starts explaining again"
+
+
+def test_the_count_is_of_phrases_not_seconds():
+    app = Standin()
+    app.note_capture(0.5)
+    app.note_capture(90.0)
+    app.note_capture(1.0)
+    app.note_capture(1.0)
+    assert "4 phrases heard" in app.said[-1]
