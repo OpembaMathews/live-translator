@@ -28,7 +28,8 @@ def test_the_first_phrase_says_so():
     app = Standin()
     app.note_capture(2.0)
     assert app.said, "capturing audio and saying nothing is the bug"
-    assert "Heard you" in app.said[0]
+    assert "Transcribing" in app.said[0]
+    assert "seconds" in app.said[0], "say roughly how long, not nothing"
 
 
 def test_it_keeps_saying_so_while_nothing_is_recognised():
@@ -36,8 +37,7 @@ def test_it_keeps_saying_so_while_nothing_is_recognised():
     for _ in range(10):
         app.note_capture(2.0)
     assert len(app.said) == 3, "a message at the first, fourth and tenth"
-    assert "10 phrases heard" in app.said[-1]
-    assert "none clear enough" in app.said[-1]
+    assert "closer to the microphone" in app.said[-1], "say what to do about it"
 
 
 def test_it_stops_once_captions_are_flowing():
@@ -65,10 +65,15 @@ def test_stopping_and_starting_explains_itself_again():
     assert len(app.said) == 2, "a new session starts explaining again"
 
 
-def test_the_count_is_of_phrases_not_seconds():
+def test_it_never_sounds_like_it_is_saving_words_up():
+    """Nothing is banked: a phrase is transcribed as it arrives or dropped.
+
+    Counting what had been heard read as though the app were collecting
+    words to translate later, which is the opposite of what it does.
+    """
     app = Standin()
-    app.note_capture(0.5)
-    app.note_capture(90.0)
-    app.note_capture(1.0)
-    app.note_capture(1.0)
-    assert "4 phrases heard" in app.said[-1]
+    for _ in range(10):
+        app.note_capture(2.0)
+    for line in app.said:
+        assert "phrases heard" not in line
+        assert not any(c.isdigit() for c in line), f"a tally crept back: {line}"

@@ -506,18 +506,24 @@ class LiveTranslator:
         said "Listening" throughout, which is indistinguishable from broken.
 
         Once captions are flowing they are the feedback, so this stops.
+
+        It deliberately does not count what it has heard. Nothing is being
+        saved up: a phrase is transcribed as it arrives and discarded if
+        there is no speech in it. Saying "5 phrases heard" read as though
+        the app were collecting words to deal with later.
         """
         self._phrases_caught += 1
         if self._captions_shown:
             return
         if self._phrases_caught == 1:
-            self.show_status("Heard you - working on the first words...",
+            self.show_status("Transcribing - the first caption is seconds away",
                              busy=True)
         elif self._phrases_caught in (4, 10):
-            # Audio is definitely arriving and still nothing has come back.
-            self.show_status(
-                f"Still listening - {self._phrases_caught} phrases heard, "
-                f"none clear enough yet", busy=True)
+            # Audio is definitely arriving and nothing has come back, so the
+            # useful thing now is what to do about it, not a tally.
+            self.show_status("Nothing clear enough to caption yet - "
+                             "try speaking closer to the microphone",
+                             busy=True)
 
     def capture_continuous(self, source, gen):
         """Fixed overlapping windows, for media rather than conversation.
@@ -829,13 +835,16 @@ class LiveTranslator:
                 self.show_status(
                     f"That sounded like {other}. Switch Speaking to Auto detect")
                 continue
-            except NoSpeech:
+            except NoSpeech as nothing:
                 quiet += 1
+                # Every discarded phrase is logged. 846 captured phrases
+                # once produced 51 captions, and the other 795 left no trace
+                # at all, which made the loss impossible to account for.
+                because = str(nothing) or "no reason given"
+                log(f"  -> nothing usable ({quiet}): {because}")
                 if quiet in (6, 30) and self.device_kind == "loopback":
                     self.show_status("No speech on this output - is playback"
                                      " going to a different device?")
-                elif quiet == 12:
-                    log(f"  -> {quiet} chunks with no speech in them")
                 continue
             except sr.UnknownValueError:
                 unclear += 1

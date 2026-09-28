@@ -28,6 +28,11 @@ class WrongLanguage(sr.UnknownValueError):
 class NoSpeech(sr.UnknownValueError):
     """The chunk contained no speech at all - room noise, music, silence.
 
+    It carries why. Five different checks raise this and they fail for
+    opposite reasons -- an empty room, a mumbled word, a language the app
+    does not translate -- so without the reason a phrase that vanished is
+    impossible to account for.
+
     Distinct from speech that was heard but could not be made out: telling
     someone to "move closer" when the mic only picked up a fan is wrong, and
     at high sensitivity that warning fired dozens of times in a row.
@@ -222,16 +227,22 @@ class WhisperSTT:
 
         # Drop segments the model flags as silence or as low-confidence
         kept = []
+        dropped = []
         for seg in segments:
-            if getattr(seg, "no_speech_prob", 0.0) > WHISPER_NO_SPEECH_MAX:
+            quiet = getattr(seg, "no_speech_prob", 0.0)
+            confidence = getattr(seg, "avg_logprob", 0.0)
+            if quiet > WHISPER_NO_SPEECH_MAX:
+                dropped.append(f"silence p={quiet:.2f}")
                 continue
-            if getattr(seg, "avg_logprob", 0.0) < WHISPER_MIN_LOGPROB:
+            if confidence < WHISPER_MIN_LOGPROB:
+                dropped.append(f"unsure {confidence:.2f} {seg.text.strip()[:30]!r}")
                 continue
             kept.append(seg.text)
         text = "".join(kept).strip()
         if not text:
             # VAD stripped everything, or every segment looked invented
-            raise NoSpeech()
+            raise NoSpeech("; ".join(dropped) if dropped
+                           else "nothing survived the voice filter")
 
         if lang:
             detected = lang
@@ -241,7 +252,11 @@ class WhisperSTT:
                 # A language this app does not translate. Falling back to
                 # English here is what produced Arabic captions fed through
                 # the English model.
-                raise NoSpeech()
+                raise NoSpeech(
+                    f"heard {info.language!r} at "
+                    f"{info.language_probability:.2f}: "
+                    + ("not a language this app translates" if code is None
+                       else "too unsure to trust") + f" - {text[:40]!r}")
             detected = code
 
         # The label and the script have to agree, or the model has drifted.
@@ -251,7 +266,8 @@ class WhisperSTT:
         if mismatch:
             if lang:
                 raise WrongLanguage(lang, text[:40])
-            raise NoSpeech()
+            raise NoSpeech(f"labelled {detected} but the script disagrees: "
+                           f"{text[:40]!r}")
         return detected, text
 
     def stream_words(self, samples, lang=None):
