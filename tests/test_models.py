@@ -10,10 +10,16 @@ from livetranslator import models
 
 
 class Response(io.BytesIO):
-    """Enough of urlopen's answer for fetch() to read it."""
+    """Enough of urlopen's answer for fetch() to read it.
 
-    def __init__(self, body, length=None):
+    status matters: 206 means the server honoured a Range request and the
+    part file can be carried on; 200 means it sent the whole thing and what
+    was already there is no use.
+    """
+
+    def __init__(self, body, length=None, status=200):
         super().__init__(body)
+        self.status = status
         self.headers = {"Content-Length": str(
             len(body) if length is None else length)}
 
@@ -24,14 +30,14 @@ class Response(io.BytesIO):
         self.close()
 
 
-def serve(body, fail_after=None):
+def serve(body, fail_after=None, status=200):
     """A urlopen that returns body, optionally dying part way through."""
     sent = {"requests": []}
 
     def opener(request, timeout=None):
         sent["requests"].append(request)
         if fail_after is None:
-            return Response(body)
+            return Response(body, status=status)
 
         class Broken(Response):
             def read(self, n=-1):
@@ -40,7 +46,7 @@ def serve(body, fail_after=None):
                     raise ConnectionError("the network went away")
                 return block
 
-        return Broken(body)
+        return Broken(body, status=status)
 
     sent["opener"] = opener
     return sent
@@ -170,7 +176,7 @@ def test_progress_is_across_the_whole_download_not_each_file(monkeypatch):
     monkeypatch.setattr(models, "packs_missing", lambda: [])
     monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 300), ("b.bin", 100)))
 
-    def pretend(url, dest, on_progress=None, expected=0):
+    def pretend(url, dest, on_progress=None, expected=0, stop=None):
         for got in (expected // 2, expected):
             on_progress(os.path.basename(dest), got, expected)
 
@@ -206,7 +212,7 @@ def test_the_plain_line_ends_in_a_percentage(monkeypatch, capsys):
     monkeypatch.setattr(models, "packs_missing", lambda: [])
     monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 100),))
 
-    def pretend(url, dest, on_progress=None, expected=0):
+    def pretend(url, dest, on_progress=None, expected=0, stop=None):
         for got in (10, 50, 100):
             on_progress("a.onnx (1 of 1)", got, expected)
 
@@ -218,3 +224,77 @@ def test_the_plain_line_ends_in_a_percentage(monkeypatch, capsys):
         figure = line.rsplit(":", 1)[-1].strip().rstrip("%")
         assert figure.isdigit(), f"not parseable: {line!r}"
         assert 0 <= int(figure) <= 100
+
+
+# --- stopping, and carrying on later --------------------------------------
+def test_a_part_file_is_carried_on_rather_than_started_again(tmp_path, monkeypatch):
+    """Pausing is only worth offering if it does not throw the bytes away."""
+    dest = tmp_path / "voice.bin"
+    (tmp_path / "voice.bin.part").write_bytes(b"first half")
+    served = serve(b"second half", status=206)
+    monkeypatch.setattr(models.urllib.request, "urlopen", served["opener"])
+
+    models.fetch("https://example/voice.bin", str(dest), expected=21)
+    assert dest.read_bytes() == b"first halfsecond half"
+    asked = served["requests"][0].get_header("Range")
+    assert asked == "bytes=10-", "the server was not asked to carry on"
+
+
+def test_a_server_that_ignores_the_range_starts_clean(tmp_path, monkeypatch):
+    """A 200 means the whole file is coming, so what was there is no use."""
+    dest = tmp_path / "voice.bin"
+    (tmp_path / "voice.bin.part").write_bytes(b"stale rubbish")
+    served = serve(b"the whole thing", status=200)
+    monkeypatch.setattr(models.urllib.request, "urlopen", served["opener"])
+
+    models.fetch("https://example/voice.bin", str(dest))
+    assert dest.read_bytes() == b"the whole thing", "stale bytes were kept"
+
+
+def test_stopping_keeps_what_arrived(tmp_path, monkeypatch):
+    import threading
+
+    stop = threading.Event()
+    stop.set()                                    # as if Pause were pressed
+    served = serve(b"x" * 5000)
+    monkeypatch.setattr(models.urllib.request, "urlopen", served["opener"])
+    dest = tmp_path / "voice.bin"
+
+    with pytest.raises(models.Stopped):
+        models.fetch("https://example/voice.bin", str(dest), stop=stop)
+    assert not dest.exists(), "a stopped download is not a finished one"
+    assert (tmp_path / "voice.bin.part").exists(), "what arrived must be kept"
+
+
+def test_the_speed_is_measured_over_a_window_not_from_the_start():
+    class Clock:
+        def __init__(self):
+            self.t = 0.0
+
+    clock = Clock()
+    speed = models.Speed(clock=lambda: clock.t)
+    for _ in range(3):                            # a slow start
+        clock.t += 1.0
+        speed.note(int(clock.t * 10_000))
+    slow = speed.rate
+    for _ in range(12):                           # then it picks up
+        clock.t += 1.0
+        speed.note(int(30_000 + clock.t * 2_000_000))
+    assert speed.rate > slow * 10, "the early crawl should stop counting"
+    assert not speed.slow
+
+
+def test_a_crawl_is_called_slow_and_an_estimate_stays_sensible():
+    class Clock:
+        def __init__(self):
+            self.t = 0.0
+
+    clock = Clock()
+    speed = models.Speed(clock=lambda: clock.t)
+    for _ in range(10):
+        clock.t += 1.0
+        speed.note(int(clock.t * 20_000))         # 20 KB/s
+    assert speed.slow
+    said = speed.describe(200_000, 650_000_000)
+    assert "hours" in said, said
+    assert "min" not in said, "days-long estimates are not information"

@@ -272,6 +272,11 @@ class QtTranslator(LiveTranslator):
                                        on_closed=self.reader_closed)
         self.reader.open_or_ask()
 
+    def check_updates(self):
+        from .update_dialog import check_now
+
+        check_now(self.win)
+
     def open_feedback(self):
         from .feedback_dialog import ask
 
@@ -323,6 +328,8 @@ class QtTranslator(LiveTranslator):
                           self._size_name, self.set_size)
         self._opacity_menu(m.addMenu("Opacity"))
         m.addSeparator()
+        up = m.addAction("Check for updates...")
+        up.triggered.connect(self.check_updates)
         fb = m.addAction("Send feedback...")
         fb.triggered.connect(self.open_feedback)
         m.addSeparator()
@@ -401,6 +408,11 @@ def main():
     from ..first_run import ensure
 
     ensure()
+    # A quiet look for a newer version. It never interrupts: if one is
+    # found the menu says so, and nothing is downloaded unasked.
+    from ..ui.update_dialog import look_quietly
+
+    look_quietly()
     # The caption bar is a Qt.Tool window, and Qt does not count those when
     # it decides the last window has closed. Left on, closing the reader
     # ended the app with the caption bar still on screen. Both windows now

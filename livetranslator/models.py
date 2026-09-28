@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import urllib.request
 import zipfile
 
@@ -76,16 +77,101 @@ def missing():
     return voices, packs, size
 
 
-def fetch(url, dest, on_progress=None, expected=0):
-    """Download one file, and only put it in place once it is whole."""
+class Stopped(Exception):
+    """The download was asked to stop. What arrived is kept."""
+
+
+class Speed:
+    """How fast this is going, and what that means for the time left.
+
+    Measured over a moving window rather than from the start, because the
+    first seconds of a download are not representative and a connection that
+    recovers should stop being called slow.
+    """
+
+    # Below this, 650 MB takes over half an hour, which is worth saying out
+    # loud before somebody sits watching a bar that looks stuck.
+    SLOW = 300_000          # bytes a second
+    WINDOW = 8.0            # seconds to average over
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock          # injectable, so this can be tested
+        self.marks = []
+        self.rate = 0.0
+
+    def note(self, done):
+        now = self.clock()
+        self.marks.append((now, done))
+        while len(self.marks) > 2 and now - self.marks[0][0] > self.WINDOW:
+            self.marks.pop(0)
+        first, last = self.marks[0], self.marks[-1]
+        seconds = last[0] - first[0]
+        if seconds >= 1.0:
+            self.rate = max(0.0, (last[1] - first[1]) / seconds)
+        return self.rate
+
+    @property
+    def slow(self):
+        return 0 < self.rate < self.SLOW
+
+    def left(self, done, total):
+        """Seconds remaining at the current rate, or None if not yet known."""
+        if self.rate <= 0 or total <= done:
+            return None
+        return (total - done) / self.rate
+
+    def describe(self, done, total):
+        """A phrase a person can act on, not a number."""
+        if self.rate <= 0:
+            return ""
+        speed = f"{self.rate / 1e6:.1f} MB/s" if self.rate >= 1e6             else f"{self.rate / 1e3:.0f} KB/s"
+        seconds = self.left(done, total)
+        if seconds is None:
+            return speed
+        # An estimate in days is not information. At that point the useful
+        # thing to say is that it will not finish on this connection.
+        if seconds > 4 * 3600:
+            return f"{speed}, more than 4 hours left"
+        if seconds > 5400:
+            return f"{speed}, about {seconds / 3600:.1f} hours left"
+        if seconds > 90:
+            return f"{speed}, about {round(seconds / 60)} min left"
+        return f"{speed}, about {round(seconds)} sec left"
+
+
+def fetch(url, dest, on_progress=None, expected=0, stop=None):
+    """Download one file, and only put it in place once it is whole.
+
+    A part file that is already there is continued rather than started
+    again. On a slow connection 650 MB is most of an hour, and asking
+    somebody to pause meant nothing while pausing threw away the bytes they
+    had already waited for.
+    """
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     part = dest + ".part"
-    request = urllib.request.Request(url, headers=AGENT)
+    have = os.path.getsize(part) if os.path.exists(part) else 0
+
+    headers = dict(AGENT)
+    if have:
+        headers["Range"] = f"bytes={have}-"
+    request = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(request, timeout=60) as response:
-        total = int(response.headers.get("Content-Length", 0)) or expected
-        done = 0
-        with open(part, "wb") as out:
+        # 206 means the server honoured the range. 200 means it sent the
+        # whole file regardless, so what was there is no use.
+        resuming = response.status == 206 and have > 0
+        if not resuming:
+            have = 0
+        length = int(response.headers.get("Content-Length", 0))
+        total = (have + length) if length else expected
+        if resuming:
+            log(f"models: carrying on {os.path.basename(dest)} "
+                f"from {have / 1e6:.0f} MB")
+        done = have
+        with open(part, "ab" if resuming else "wb") as out:
             while True:
+                if stop is not None and stop.is_set():
+                    out.flush()
+                    raise Stopped()
                 block = response.read(CHUNK)
                 if not block:
                     break
@@ -110,11 +196,11 @@ def pack_links():
     return links
 
 
-def install_pack(url, dest_root, on_progress=None, expected=0):
+def install_pack(url, dest_root, on_progress=None, expected=0, stop=None):
     """An .argosmodel is a zip holding one folder; unpack it as it is."""
     name = url.rsplit("/", 1)[-1]
     archive = os.path.join(dest_root, name)
-    fetch(url, archive, on_progress, expected=expected)
+    fetch(url, archive, on_progress, expected=expected, stop=stop)
     try:
         with zipfile.ZipFile(archive) as zf:
             inside = {n.split("/")[0] for n in zf.namelist() if "/" in n}
@@ -124,7 +210,7 @@ def install_pack(url, dest_root, on_progress=None, expected=0):
     return sorted(inside)
 
 
-def install(on_progress=None, on_step=None):
+def install(on_progress=None, on_step=None, stop=None):
     """Fetch whatever is missing. Safe to run again; it skips what is there.
 
     Progress is reported across the whole download, not per file. There are
@@ -144,11 +230,13 @@ def install(on_progress=None, on_step=None):
             on_progress(f"{name} ({at[0]} of {jobs})", at_now, total)
 
     for name in voices:
+        if stop is not None and stop.is_set():
+            raise Stopped()
         at[0] += 1
         size = dict(VOICE_FILES)[name]
         step(f"Downloading the voice, {at[0]} of {jobs}: {name}")
         fetch(KOKORO + name, os.path.join(voice_dir(), name),
-              overall, expected=size)
+              overall, expected=size, stop=stop)
         done[0] += size
         log(f"models: fetched {name}")
 
@@ -156,6 +244,8 @@ def install(on_progress=None, on_step=None):
         step(f"Looking up the translation packs ({at[0]} of {jobs} done)")
         links = pack_links()
         for pair in packs:
+            if stop is not None and stop.is_set():
+                raise Stopped()
             at[0] += 1
             url = links.get(pair)
             if not url:
@@ -164,7 +254,8 @@ def install(on_progress=None, on_step=None):
                 continue
             step(f"Downloading translation {at[0]} of {jobs}: "
                  f"{pair[0]} to {pair[1]}")
-            install_pack(url, PACK_DIR, overall, expected=PACK_SIZE)
+            install_pack(url, PACK_DIR, overall, expected=PACK_SIZE,
+                         stop=stop)
             done[0] += PACK_SIZE
             log(f"models: installed pack {pair[0]}->{pair[1]}")
 

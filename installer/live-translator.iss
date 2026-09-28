@@ -128,7 +128,11 @@ begin
   // told the user only that the installer had not frozen.
   Result := -1;
   I := Length(Line);
-  while (I > 0) and (Line[I] = ' ') do
+  // Trailing whitespace, and a carriage return above all: Python writes CRLF
+  // on Windows, so stripping only spaces left the #13 sitting exactly where
+  // the '%' was expected. Every line failed, and the bar fell back to the
+  // animation that runs to the end and starts again.
+  while (I > 0) and (Line[I] <= ' ') do
     I := I - 1;
   if (I = 0) or (Line[I] <> '%') then
     Exit;
