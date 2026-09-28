@@ -408,6 +408,12 @@ def main():
     from ..first_run import ensure
 
     ensure()
+    # Anything an earlier version wrote beside the code
+    # belongs in the app-data folder now.
+    from ..paths import migrate
+    from ..log import log as write_log
+
+    migrate(report=write_log)
     # A quiet look for a newer version. It never interrupts: if one is
     # found the menu says so, and nothing is downloaded unasked.
     from ..ui.update_dialog import look_quietly

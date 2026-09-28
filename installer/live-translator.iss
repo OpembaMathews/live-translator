@@ -84,9 +84,10 @@ Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; \
     Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallDelete]
-; Installed wheels live under the app folder, so they go with it. What the
-; user made -- transcripts, settings, corrections, models -- is in
-; %LOCALAPPDATA%\LiveTranslator and is deliberately left behind.
+; Installed wheels live under the app folder, so they go with it. What is in
+; %LOCALAPPDATA%\LiveTranslator is asked about instead, in [Code] below:
+; some of it is worth hundreds of megabytes and some of it is irreplaceable,
+; and those are not the same decision.
 Type: filesandordirs; Name: "{app}\runtime\Lib\site-packages"
 Type: filesandordirs; Name: "{app}\livetranslator\__pycache__"
 Type: files; Name: "{app}\library-install.log"
@@ -281,5 +282,150 @@ begin
     InstallLibraries;
     if WizardIsTaskSelected('models') then
       DownloadModels;
+  end;
+end;
+
+// --- uninstalling -------------------------------------------------------
+// What the app downloaded and what the user made both sit in
+// %LOCALAPPDATA%\LiveTranslator, and they are not the same decision. The
+// models are 650 MB and can always be fetched again; the transcripts, the
+// corrected translations and the settings cannot. So they are asked
+// separately, and the irreplaceable half defaults to being kept.
+
+function DataDir: String;
+begin
+  Result := ExpandConstant('{localappdata}\LiveTranslator');
+end;
+
+function SizeOfTree(const Folder: String): Int64;
+var
+  Found: TFindRec;
+begin
+  Result := 0;
+  if FindFirst(Folder + '\*', Found) then
+  try
+    repeat
+      if (Found.Name = '.') or (Found.Name = '..') then
+        Continue;
+      if (Found.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+        Result := Result + SizeOfTree(Folder + '\' + Found.Name)
+      else
+        Result := Result + (Int64(Found.SizeHigh) shl 32) + Int64(Found.SizeLow);
+    until not FindNext(Found);
+  finally
+    FindClose(Found);
+  end;
+end;
+
+function CountIn(const Folder: String): Integer;
+var
+  Found: TFindRec;
+begin
+  Result := 0;
+  if FindFirst(Folder + '\*', Found) then
+  try
+    repeat
+      if (Found.Name <> '.') and (Found.Name <> '..') then
+        Result := Result + 1;
+    until not FindNext(Found);
+  finally
+    FindClose(Found);
+  end;
+end;
+
+function Megabytes(const Bytes: Int64): String;
+begin
+  Result := IntToStr(Bytes div 1048576) + ' MB';
+end;
+
+procedure AskAboutModels;
+var
+  Models: String;
+  Size: Int64;
+begin
+  Models := DataDir + '\tts-models';
+  if not DirExists(Models) and not DirExists(DataDir + '\translate-packs') then
+    Exit;
+
+  Size := SizeOfTree(Models) + SizeOfTree(DataDir + '\translate-packs');
+  if MsgBox('Delete the downloaded voice and translation packs?'
+            + #13#10#13#10 + 'They take ' + Megabytes(Size)
+            + ' and can be downloaded again at any time.' + #13#10#13#10
+            + 'Keeping them means a later reinstall does not have to fetch '
+            + 'them a second time.',
+            mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+  begin
+    DelTree(Models, True, True, True);
+    DelTree(DataDir + '\translate-packs', True, True, True);
+  end;
+end;
+
+procedure DeleteWork;
+begin
+  // Named one by one rather than DelTree on the parent, so models kept a
+  // moment ago are not swept away along with the transcripts.
+  DelTree(DataDir + '\transcripts', True, True, True);
+  DelTree(DataDir + '\to-correct', True, True, True);
+  DelTree(DataDir + '\feedback', True, True, True);
+  DelTree(DataDir + '\update', True, True, True);
+  DelTree(DataDir + '\previous', True, True, True);
+  DeleteFile(DataDir + '\translation-memory.json');
+  DeleteFile(DataDir + '\settings.json');
+  DeleteFile(DataDir + '\translator.log');
+end;
+
+procedure RemoveIfEmpty;
+begin
+  if DirExists(DataDir) and (CountIn(DataDir) = 0) then
+    RemoveDir(DataDir);
+end;
+
+procedure AskAboutWork;
+var
+  Sessions, Corrections: Integer;
+  Detail: String;
+begin
+  if not DirExists(DataDir) then
+    Exit;
+
+  Sessions := CountIn(DataDir + '\transcripts');
+  Corrections := CountIn(DataDir + '\to-correct');
+  Detail := '';
+  if Sessions > 0 then
+    Detail := Detail + #13#10 + '  ' + IntToStr(Sessions) + ' saved transcripts';
+  if Corrections > 0 then
+    Detail := Detail + #13#10 + '  ' + IntToStr(Corrections)
+              + ' files of translations waiting to be corrected';
+  if FileExists(DataDir + '\translation-memory.json') then
+    Detail := Detail + #13#10 + '  the translations you have corrected';
+  if FileExists(DataDir + '\settings.json') then
+    Detail := Detail + #13#10 + '  your settings, including the AI key';
+
+  if Detail = '' then
+  begin
+    // Nothing of the user's is here. Tidy up what is left, but only
+    // by name: DelTree on the whole folder would take models that
+    // were deliberately kept a moment ago.
+    DeleteWork;
+    RemoveIfEmpty;
+    Exit;
+  end;
+
+  if MsgBox('Delete everything Live Translator saved for you?' + Detail
+            + #13#10#13#10 + 'This cannot be undone. Answer No to keep it: '
+            + 'a later reinstall will find it again.',
+            mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+  begin
+    DeleteWork;
+    RemoveIfEmpty;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    AskAboutModels;
+    AskAboutWork;
   end;
 end;

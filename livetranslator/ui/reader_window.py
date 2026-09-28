@@ -915,6 +915,12 @@ def main():
     from ..first_run import ensure
 
     ensure()
+    # Anything an earlier version wrote beside the code
+    # belongs in the app-data folder now.
+    from ..paths import migrate
+    from ..log import log as write_log
+
+    migrate(report=write_log)
     window = ReaderWindow(Voice)
     if len(sys.argv) > 1:
         window.show()

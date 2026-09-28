@@ -146,3 +146,73 @@ def test_the_unix_launchers_keep_unix_line_endings():
                               cwd=str(PACKAGE.parent), capture_output=True).stdout
         assert blob, f"{name} is not staged in git"
         assert b"\r" not in blob, f"{name} would be unusable on a Mac"
+
+
+# --- what a person creates never lives beside the code --------------------
+def test_nothing_a_user_makes_is_written_next_to_the_code():
+    """Uninstalling removes the install folder. Anything written there goes
+    with it -- a term's transcripts, deleted without a word."""
+    from livetranslator import paths
+
+    for name in ("LOG_PATH", "SETTINGS_PATH", "SESSION_DIR",
+                 "MEMORY_PATH", "CORRECTIONS_DIR", "TTS_DIR", "PACK_DIR"):
+        where = getattr(paths, name)
+        assert where.startswith(paths.APP_DIR), \
+            f"{name} is at {where}, which an uninstall would delete"
+
+
+def test_the_shipped_seed_does_stay_with_the_code():
+    """It is part of the app, not part of anyone's work."""
+    from livetranslator import paths
+
+    assert paths.MEMORY_SEED.startswith(paths.ROOT)
+
+
+def test_an_older_install_keeps_its_transcripts(tmp_path, monkeypatch):
+    """Somebody already using the app has files in the old place, and an
+    upgrade that quietly stopped finding them looks like data loss."""
+    from livetranslator import paths
+
+    old_root = tmp_path / "app"
+    (old_root / "transcripts").mkdir(parents=True)
+    (old_root / "transcripts" / "session.html").write_text("a talk",
+                                                          encoding="utf-8")
+    (old_root / "settings.json").write_text('{"ai_provider": "claude"}',
+                                            encoding="utf-8")
+    new_home = tmp_path / "data"
+    monkeypatch.setattr(paths, "SESSION_DIR", str(new_home / "transcripts"))
+    monkeypatch.setattr(paths, "SETTINGS_PATH", str(new_home / "settings.json"))
+    monkeypatch.setattr(paths, "MOVED", (
+        ("transcripts", str(new_home / "transcripts")),
+        ("settings.json", str(new_home / "settings.json")),
+    ))
+
+    moved = paths.migrate(root=str(old_root))
+    assert sorted(moved) == ["settings.json", "transcripts"]
+    assert (new_home / "transcripts" / "session.html").read_text() == "a talk"
+    assert not (old_root / "transcripts").exists()
+
+
+def test_migrating_never_overwrites_what_is_already_there(tmp_path, monkeypatch):
+    """Two installs, both with settings. The one in use wins."""
+    from livetranslator import paths
+
+    old_root = tmp_path / "app"
+    old_root.mkdir()
+    (old_root / "settings.json").write_text("stale", encoding="utf-8")
+    new_home = tmp_path / "data"
+    new_home.mkdir()
+    (new_home / "settings.json").write_text("in use", encoding="utf-8")
+    monkeypatch.setattr(paths, "MOVED", (
+        ("settings.json", str(new_home / "settings.json")),))
+
+    assert paths.migrate(root=str(old_root)) == []
+    assert (new_home / "settings.json").read_text() == "in use"
+
+
+def test_migrating_with_nothing_to_move_is_quiet(tmp_path):
+    from livetranslator import paths
+
+    said = []
+    assert paths.migrate(root=str(tmp_path), report=said.append) == []
+    assert said == []
