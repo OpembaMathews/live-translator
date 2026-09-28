@@ -30,13 +30,25 @@ from .paths import PACK_DIR, TTS_DIR
 AGENT = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 INDEX = ("https://raw.githubusercontent.com/argosopentech/"
          "argospm-index/main/index.json")
+# model-files-v1.1, not v1.0. Both releases carry a file called
+# kokoro-v1.0.onnx and they are not the same file: only the v1.1 build
+# reports how long each sound lasts, and without those the reader cannot
+# highlight the words it is reading, so it refuses to start at all.
 KOKORO = ("https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
-          "model-files-v1.0/")
+          "model-files-v1.1/")
 # (from, to) for the packs the app offers. English is the pivot, so these
 # four reach every combination the language menu lists.
 WANTED = (("en", "zt"), ("zt", "en"), ("en", "sw"), ("sw", "en"))
-VOICE_FILES = (("kokoro-v1.0.onnx", 325_522_944),
-               ("voices-v1.0.bin", 28_182_016))
+# Name, exact size, and checksum of the file that release serves. The size
+# was approximate before and the two releases differ by 27 KB in a 325 MB
+# file, which nothing would have noticed. Pinned like this, fetching the
+# wrong one fails loudly at download instead of quietly at first use.
+VOICE_FILES = (
+    ("kokoro-v1.0.onnx", 325_505_369,
+     "beb0d1848dee9a49da392cc3df26958d46cfa35d321edf434f52949153f0df3a"),
+    ("voices-v1.0.bin", 28_214_398,
+     "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"),
+)
 CHUNK = 1 << 16
 # The four packs are 71-76 MB. Their exact size is only known once the index
 # has been fetched, and the estimate only has to be close enough for a bar.
@@ -51,12 +63,46 @@ def watching():
         return False
 
 
+def expected_for(name):
+    """The size and checksum the release should serve for this file."""
+    for filename, size, sha in VOICE_FILES:
+        if filename == name:
+            return size, sha
+    return 0, ""
+
+
+def check(path, size, sha):
+    """Refuse a file that is not the one that was asked for.
+
+    Two Kokoro releases ship a kokoro-v1.0.onnx and they differ by 27 KB in
+    325 MB. The wrong one installs perfectly and then fails at first use
+    with a message about durations, which is a long way from the cause.
+    """
+    import hashlib
+
+    got = os.path.getsize(path)
+    if size and got != size:
+        os.remove(path)
+        raise ValueError(f"{os.path.basename(path)} is {got:,} bytes, not "
+                         f"{size:,}: the wrong file was served")
+    if not sha:
+        return True
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    if digest.hexdigest() != sha:
+        os.remove(path)
+        raise ValueError(f"{os.path.basename(path)} did not arrive intact")
+    return True
+
+
 def voice_dir():
     return os.path.join(TTS_DIR, "kokoro")
 
 
 def voice_missing():
-    return [name for name, _size in VOICE_FILES
+    return [name for name, _size, _sha in VOICE_FILES
             if not os.path.exists(os.path.join(voice_dir(), name))]
 
 
@@ -72,7 +118,7 @@ def missing():
     """What still has to be fetched, and roughly how much that is."""
     voices = voice_missing()
     packs = packs_missing()
-    size = sum(s for n, s in VOICE_FILES if n in voices)
+    size = sum(s for n, s, _h in VOICE_FILES if n in voices)
     size += PACK_SIZE * len(packs)
     return voices, packs, size
 
@@ -233,10 +279,11 @@ def install(on_progress=None, on_step=None, stop=None):
         if stop is not None and stop.is_set():
             raise Stopped()
         at[0] += 1
-        size = dict(VOICE_FILES)[name]
+        size, wanted = expected_for(name)
         step(f"Downloading the voice, {at[0]} of {jobs}: {name}")
-        fetch(KOKORO + name, os.path.join(voice_dir(), name),
-              overall, expected=size, stop=stop)
+        where = os.path.join(voice_dir(), name)
+        fetch(KOKORO + name, where, overall, expected=size, stop=stop)
+        check(where, size, wanted)
         done[0] += size
         log(f"models: fetched {name}")
 

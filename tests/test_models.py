@@ -112,12 +112,12 @@ def test_what_is_missing_is_worked_out_from_disk(tmp_path, monkeypatch):
     monkeypatch.setattr(models, "TTS_DIR", str(tmp_path / "tts"))
     monkeypatch.setattr(models, "packs_missing", lambda: [("en", "zt")])
     voices, packs, size = models.missing()
-    assert voices == [name for name, _s in models.VOICE_FILES]
+    assert voices == [name for name, _s, _h in models.VOICE_FILES]
     assert packs == [("en", "zt")]
     assert size > 300e6, "the estimate should be in the right order"
 
     os.makedirs(models.voice_dir())
-    for name, _s in models.VOICE_FILES:
+    for name, _s, _h in models.VOICE_FILES:
         open(os.path.join(models.voice_dir(), name), "wb").close()
     voices, _p, _s = models.missing()
     assert voices == [], "files that are there are not fetched again"
@@ -174,7 +174,9 @@ def test_progress_is_across_the_whole_download_not_each_file(monkeypatch):
     """A bar that ran nought to a hundred six times answered nothing."""
     monkeypatch.setattr(models, "voice_missing", lambda: ["a.onnx", "b.bin"])
     monkeypatch.setattr(models, "packs_missing", lambda: [])
-    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 300), ("b.bin", 100)))
+    monkeypatch.setattr(models, "VOICE_FILES",
+                        (("a.onnx", 300, ""), ("b.bin", 100, "")))
+    monkeypatch.setattr(models, "check", lambda *a: True)
 
     def pretend(url, dest, on_progress=None, expected=0, stop=None):
         for got in (expected // 2, expected):
@@ -193,7 +195,8 @@ def test_progress_is_across_the_whole_download_not_each_file(monkeypatch):
 def test_each_step_says_where_it_is_in_the_queue(monkeypatch):
     monkeypatch.setattr(models, "voice_missing", lambda: ["a.onnx"])
     monkeypatch.setattr(models, "packs_missing", lambda: [("en", "zt")])
-    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 10),))
+    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 10, ""),))
+    monkeypatch.setattr(models, "check", lambda *a: True)
     monkeypatch.setattr(models, "fetch", lambda *a, **k: None)
     monkeypatch.setattr(models, "pack_links",
                         lambda: {("en", "zt"): "https://x/p.argosmodel"})
@@ -210,7 +213,8 @@ def test_the_plain_line_ends_in_a_percentage(monkeypatch, capsys):
     monkeypatch.setattr(models, "watching", lambda: False)
     monkeypatch.setattr(models, "voice_missing", lambda: ["a.onnx"])
     monkeypatch.setattr(models, "packs_missing", lambda: [])
-    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 100),))
+    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 100, ""),))
+    monkeypatch.setattr(models, "check", lambda *a: True)
 
     def pretend(url, dest, on_progress=None, expected=0, stop=None):
         for got in (10, 50, 100):
@@ -298,3 +302,64 @@ def test_a_crawl_is_called_slow_and_an_estimate_stays_sensible():
     said = speed.describe(200_000, 650_000_000)
     assert "hours" in said, said
     assert "min" not in said, "days-long estimates are not information"
+
+
+# --- the right file, not just a file --------------------------------------
+def test_the_voice_comes_from_the_release_that_reports_durations():
+    """Both Kokoro releases ship a kokoro-v1.0.onnx and they differ. Only
+    the v1.1 build says how long each sound lasts, and without that the
+    reader cannot highlight what it is reading, so it will not start."""
+    assert "model-files-v1.1" in models.KOKORO
+    assert "model-files-v1.0/" not in models.KOKORO
+
+
+def test_every_voice_file_is_pinned_by_size_and_checksum():
+    for name, size, sha in models.VOICE_FILES:
+        assert size > 0, f"{name} has no size to check against"
+        assert len(sha) == 64, f"{name} has no checksum"
+
+
+def test_a_file_of_the_wrong_size_is_refused(tmp_path):
+    """27 KB different in 325 MB is what tells the two releases apart."""
+    path = tmp_path / "kokoro.onnx"
+    path.write_bytes(b"x" * 500)
+    with pytest.raises(ValueError, match="wrong file was served"):
+        models.check(str(path), 325_505_369, "")
+    assert not path.exists(), "a wrong file must not be left to be used"
+
+
+def test_a_damaged_file_is_refused(tmp_path):
+    path = tmp_path / "voices.bin"
+    path.write_bytes(b"hello")
+    with pytest.raises(ValueError, match="did not arrive intact"):
+        models.check(str(path), 5, "0" * 64)
+    assert not path.exists()
+
+
+def test_the_right_file_passes(tmp_path):
+    import hashlib
+
+    path = tmp_path / "voices.bin"
+    body = b"the real thing"
+    path.write_bytes(body)
+    assert models.check(str(path), len(body), hashlib.sha256(body).hexdigest())
+    assert path.exists()
+
+
+@pytest.mark.network
+def test_the_release_really_serves_what_is_pinned():
+    """If the release is ever re-cut, this fails here rather than on a
+    tester's machine with a message about durations."""
+    import urllib.request
+
+    for name, size, _sha in models.VOICE_FILES:
+        request = urllib.request.Request(models.KOKORO + name,
+                                         headers={**models.AGENT,
+                                                  "Range": "bytes=0-1023"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                rng = response.headers.get("Content-Range", "")
+        except Exception as e:
+            pytest.skip(f"no network: {type(e).__name__}")
+        served = int(rng.split("/")[-1]) if "/" in rng else 0
+        assert served == size, f"{name} is now {served:,}, pinned at {size:,}"
