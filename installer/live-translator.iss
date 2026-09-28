@@ -39,6 +39,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; \
     GroupDescription: "Shortcuts:"
+; Downloading the models here rather than on first run means one wait, at a
+; moment the user is already waiting, instead of a surprise the first time
+; they try to read a paper. It can be skipped: someone installing on a phone
+; tether would rather do it later, and the app asks again if they do.
+Name: "models"; Description: \
+    "Download the voice and translation packs now (about 650 MB)"; \
+    GroupDescription: "Setup:"
 
 [Files]
 ; The app itself
@@ -83,6 +90,7 @@ Filename: "{app}\{#AppExe}"; Description: "Start {#AppName}"; \
 Type: filesandordirs; Name: "{app}\runtime\Lib\site-packages"
 Type: filesandordirs; Name: "{app}\livetranslator\__pycache__"
 Type: files; Name: "{app}\library-install.log"
+Type: files; Name: "{app}\model-download.log"
 
 [Code]
 // pip runs hidden and reports on the wizard's own progress page. Letting it
@@ -177,8 +185,66 @@ begin
   end;
 end;
 
+procedure DownloadModels;
+var
+  Page: TOutputProgressWizardPage;
+  LogPath, DonePath, Command, Line: String;
+  Code, Tick: Integer;
+begin
+  LogPath := ExpandConstant('{app}\model-download.log');
+  DonePath := ExpandConstant('{app}\model-download.done');
+  DeleteFile(LogPath);
+  DeleteFile(DonePath);
+
+  Page := CreateOutputProgressPage(
+    'Downloading the voice and translation packs',
+    'About 650 MB. They are kept, so this happens once.');
+  Page.SetText('Starting...', '');
+  Page.Show;
+  try
+    Command := '/c ""' + ExpandConstant('{app}\runtime\python.exe') +
+      '" -m livetranslator.models > "' + LogPath +
+      '" 2>&1 & echo %errorlevel% > "' + DonePath + '""';
+
+    if not Exec(ExpandConstant('{cmd}'), Command, ExpandConstant('{app}'),
+                SW_HIDE, ewNoWait, Code) then
+      Exit;
+
+    Tick := 0;
+    while not FileExists(DonePath) do
+    begin
+      Line := LastLineOf(LogPath);
+      if Line = '' then
+        Line := 'Contacting the download servers...';
+      Page.SetText(Copy(Line, 1, 90), '');
+      Tick := (Tick + 2) mod 100;
+      Page.SetProgress(Tick, 100);
+      Sleep(400);
+    end;
+
+    Code := ExitCodeIn(DonePath);
+    DeleteFile(DonePath);
+    if Code <> 0 then
+      // Never start a line with #: Inno's preprocessor reads that as a
+      // directive, whatever indentation is in front of it.
+      MsgBox('The voice and translation packs did not finish downloading.'
+             + #13#10#13#10 + 'What arrived is kept, and the app offers to '
+             + 'finish the download the next time it starts.'
+             + #13#10#13#10 + 'The details are in model-download.log.',
+             mbInformation, MB_OK);
+  finally
+    Page.Hide;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
+    // Order matters. The downloader is part of the app and imports the
+    // translation engine, so it cannot run until pip has finished.
     InstallLibraries;
+    if WizardIsTaskSelected('models') then
+      DownloadModels;
+  end;
 end;

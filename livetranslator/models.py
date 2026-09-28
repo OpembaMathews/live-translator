@@ -151,19 +151,31 @@ def main():
     print(f"About {size / 1e6:.0f} MB to download "
           f"({len(voices)} voice files, {len(packs)} translation packs).")
 
+    # A bar redrawn with \r is right in a terminal and useless in a log,
+    # where it arrives as one enormous line. The installer reads this
+    # through a log, so when nothing is watching it prints plain lines.
+    live = sys.stdout.isatty()
     width = shutil.get_terminal_size((70, 20)).columns - 34
+    last = {"percent": -100}
 
     def bar(name, done, total):
         if not total:
             return
-        filled = int(width * done / total)
-        sys.stdout.write(
-            f"\r  {name[:26]:26} [{'#' * filled}{'.' * (width - filled)}] "
-            f"{100 * done / total:3.0f}%")
+        percent = int(100 * done / total)
+        if live:
+            filled = int(width * done / total)
+            sys.stdout.write(
+                f"\r  {name[:26]:26} [{'#' * filled}{'.' * (width - filled)}] "
+                f"{percent:3.0f}%")
+        elif percent >= last["percent"] + 5:
+            last["percent"] = percent
+            sys.stdout.write(f"{name}: {percent}%\n")
         sys.stdout.flush()
 
     def step(text):
-        sys.stdout.write(f"\n{text}\n")
+        last["percent"] = -100
+        sys.stdout.write(f"\n{text}\n" if live else f"{text}\n")
+        sys.stdout.flush()
 
     try:
         ok = install(on_progress=bar, on_step=step)
