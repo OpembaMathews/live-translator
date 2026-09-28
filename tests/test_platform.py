@@ -135,3 +135,14 @@ def test_there_is_a_launcher_for_unix(script):
     path = PACKAGE.parent / script
     assert path.is_file()
     assert path.read_text(encoding="utf-8").startswith("#!/bin/sh")
+
+
+def test_the_unix_launchers_keep_unix_line_endings():
+    """Checked out with CRLF, /bin/sh reports "bad interpreter: ^M"."""
+    import subprocess
+
+    for name in ("run.sh", "read.sh"):
+        blob = subprocess.run(["git", "show", f":{name}"],
+                              cwd=str(PACKAGE.parent), capture_output=True).stdout
+        assert blob, f"{name} is not staged in git"
+        assert b"\r" not in blob, f"{name} would be unusable on a Mac"
