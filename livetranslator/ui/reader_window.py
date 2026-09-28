@@ -277,9 +277,13 @@ class PageView(QWidget):
 class ReaderWindow(QMainWindow, chrome.Draggable):
     """Open a paper, read it aloud, follow along."""
 
-    def __init__(self, voice_factory, on_captions=None):
+    def __init__(self, voice_factory, on_captions=None, on_closed=None):
         super().__init__()
         self.voice_factory = voice_factory
+        # Told when this window closes, so the app can end if the caption
+        # bar is away too. Qt cannot work that out on its own: the bar is a
+        # Tool window and does not count as a window that is still open.
+        self.on_closed = on_closed
         # Only set when the reader was opened from the caption bar, so the
         # reader run on its own does not offer to show a bar that is not
         # there.
@@ -869,6 +873,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
     def closeEvent(self, event):
         self.stop()
         super().closeEvent(event)
+        if self.on_closed is not None:
+            self.on_closed()
 
 
 def main():

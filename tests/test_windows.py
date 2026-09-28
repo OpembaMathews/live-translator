@@ -190,3 +190,48 @@ def test_the_reader_opened_from_the_bar_can_bring_it_back():
     buttons[0].click()
     assert asked == [True]
     window.close()
+
+
+def test_closing_the_reader_leaves_the_captions_running(no_real_quit):
+    """Qt ignores Tool windows when it decides the last one has closed, so
+    closing the reader ended the app with the caption bar still on screen."""
+    app = Standin(reader=Fake())
+    no_real_quit["owner"] = app
+    app.reader_closed()                  # the reader's closeEvent calls this
+    assert app.quit_called == 0, "the caption bar is still on screen"
+    assert app.win.visible
+    assert not app.closing
+
+
+def test_closing_the_reader_last_ends_the_app(no_real_quit):
+    app = Standin(reader=Fake())
+    no_real_quit["owner"] = app
+    app.close()                          # captions away, reader still open
+    assert app.quit_called == 0
+    app.reader_closed()                  # now the reader goes too
+    assert app.quit_called == 1
+    assert app.closing
+
+
+def test_the_reader_alone_reports_to_nobody():
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import ReaderWindow
+
+    alone = ReaderWindow(voice_factory=lambda: None)
+    assert alone.on_closed is None
+    alone.close()                        # must not raise
+
+
+def test_the_reader_tells_the_app_when_it_closes():
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import ReaderWindow
+
+    told = []
+    window = ReaderWindow(voice_factory=lambda: None,
+                          on_closed=lambda: told.append(True))
+    window.close()
+    assert told == [True]

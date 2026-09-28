@@ -118,6 +118,22 @@ class QtTranslator(LiveTranslator):
         self._size_name = name
         log(f"size -> {name}")
 
+    def reader_closed(self):
+        """The reader has gone. Quit only if the caption bar went first."""
+        if self.win.isVisible():
+            return
+        log("reader closed with the captions already away; quitting")
+        self.quit()
+
+    def quit(self):
+        self.closing = True
+        try:
+            self._pump.stop()
+        except Exception:
+            pass
+        self.win.close()
+        QApplication.instance().quit()
+
     def reader_open(self):
         reader = getattr(self, "reader", None)
         return reader is not None and reader.isVisible()
@@ -157,9 +173,7 @@ class QtTranslator(LiveTranslator):
         if self.reader_open():
             log("captions closed; the reader is still open")
             return
-        self.closing = True
-        self.win.close()
-        QApplication.instance().quit()
+        self.quit()
 
     # -- UI methods the engine half drives ---------------------------------
     def on_ui(self, fn):
@@ -254,7 +268,8 @@ class QtTranslator(LiveTranslator):
         from .reader_window import ReaderWindow
 
         if getattr(self, "reader", None) is None:
-            self.reader = ReaderWindow(Voice, on_captions=self.show_captions)
+            self.reader = ReaderWindow(Voice, on_captions=self.show_captions,
+                                       on_closed=self.reader_closed)
         self.reader.show()
         self.reader.raise_()
         self.reader.activateWindow()
@@ -375,7 +390,11 @@ class QtTranslator(LiveTranslator):
 
 def main():
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(True)
+    # The caption bar is a Qt.Tool window, and Qt does not count those when
+    # it decides the last window has closed. Left on, closing the reader
+    # ended the app with the caption bar still on screen. Both windows now
+    # say for themselves whether anything is left to stay open for.
+    app.setQuitOnLastWindowClosed(False)
     translator = QtTranslator()
     apply_startup_options(translator, sys.argv)
     translator.run()
