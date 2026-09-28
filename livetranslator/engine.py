@@ -931,7 +931,9 @@ class LiveTranslator:
 
 
 def apply_startup_options(app, argv):
-    """--device <text> picks an input by name; --input auto|en|zt sets language."""
+    """Startup flags: --device <text> picks an input by name, --input and
+    --target set languages, --response picks how long a window the model
+    gets."""
     if "--input" in argv:
         mode = argv[argv.index("--input") + 1]
         if mode == "auto" or mode in LANGUAGES:
@@ -943,6 +945,17 @@ def apply_startup_options(app, argv):
         if mode == "auto" or mode in LANGUAGES:
             app.target_mode = mode
             log(f"startup: target {mode}")
+
+    if "--response" in argv:
+        # Named as in the menu, but case does not matter from a shortcut
+        wanted = argv[argv.index("--response") + 1].strip().lower()
+        match = next((n for n in RESPONSE_PRESETS if n.lower() == wanted), None)
+        if match:
+            app.response = match
+            log(f"startup: response {match}")
+        else:
+            log(f"startup: no response preset {wanted!r}; "
+                f"have {list(RESPONSE_PRESETS)}")
 
     if "--device" in argv:
         wanted = argv[argv.index("--device") + 1].lower()
