@@ -77,3 +77,32 @@ def test_it_never_sounds_like_it_is_saving_words_up():
     for line in app.said:
         assert "phrases heard" not in line
         assert not any(c.isdigit() for c in line), f"a tally crept back: {line}"
+
+
+# --- how much audio the model gets to work with ---------------------------
+def test_media_windows_are_long_enough_to_be_understood():
+    """Whisper reads each window knowing nothing of the one before it.
+
+    Measured on 25 seconds of a Chinese video, one model, only the window
+    length changed: 3s gave eleven mostly-nonsense fragments and cost 21.5s
+    of CPU; 10s gave three pieces close to a single pass and cost 7.7s.
+    Short windows were the worst of both.
+    """
+    from livetranslator.config import RESPONSE_PRESETS
+
+    for name, preset in RESPONSE_PRESETS.items():
+        window, overlap = preset[2], preset[3]
+        assert window >= 5.0, f"{name} gives the model only {window}s"
+        assert overlap >= 0.8, f"{name} can cut a word at every boundary"
+        assert overlap < window / 2, f"{name} repeats more than it advances"
+
+
+def test_the_presets_are_ordered_the_way_they_are_named():
+    from livetranslator.config import RESPONSE_PRESETS
+
+    fast = RESPONSE_PRESETS["Fast"]
+    balanced = RESPONSE_PRESETS["Balanced"]
+    accurate = RESPONSE_PRESETS["Accurate"]
+    assert fast[2] < balanced[2] < accurate[2], \
+        "a faster preset must not hand the model more audio to chew on"
+    assert fast[0] < balanced[0] < accurate[0]
