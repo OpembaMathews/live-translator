@@ -561,6 +561,21 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             f"Page {self.view.page_at(top) + 1} / {self.doc.page_count}")
 
     # -- opening -----------------------------------------------------------
+    def open_or_ask(self):
+        """Show the reader, and ask for a paper when it has none.
+
+        An empty reader is a window with nothing in it and no obvious next
+        step, so opening one goes straight to the file picker. The window is
+        shown first, and the picker follows on the next turn of the event
+        loop, so the picker appears over the reader rather than over nothing.
+        A paper already open is left alone.
+        """
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if self.doc is None:
+            QTimer.singleShot(0, self.choose_file)
+
     def choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open a paper", "", "PDF files (*.pdf)")
@@ -887,9 +902,11 @@ def main():
 
     app = QApplication(sys.argv)
     window = ReaderWindow(Voice)
-    window.show()
     if len(sys.argv) > 1:
+        window.show()
         window.open(sys.argv[1])
+    else:
+        window.open_or_ask()
     sys.exit(app.exec())
 
 

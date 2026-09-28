@@ -270,9 +270,7 @@ class QtTranslator(LiveTranslator):
         if getattr(self, "reader", None) is None:
             self.reader = ReaderWindow(Voice, on_captions=self.show_captions,
                                        on_closed=self.reader_closed)
-        self.reader.show()
-        self.reader.raise_()
-        self.reader.activateWindow()
+        self.reader.open_or_ask()
 
     def open_ai_dialog(self):
         dlg = AIKeyDialog(self.win, self.ai_provider, bool(self.ai_key),

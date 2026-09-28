@@ -235,3 +235,41 @@ def test_the_reader_tells_the_app_when_it_closes():
                           on_closed=lambda: told.append(True))
     window.close()
     assert told == [True]
+
+
+# --- opening the reader with nothing to read ------------------------------
+def a_reader(monkeypatch, asked):
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui import reader_window as rw
+
+    monkeypatch.setattr(rw.ReaderWindow, "choose_file",
+                        lambda self: asked.append(True))
+    return rw.ReaderWindow(voice_factory=lambda: None)
+
+
+def test_an_empty_reader_asks_for_a_paper(monkeypatch):
+    """A blank window with no obvious next step is not a useful thing to open."""
+    from PySide6.QtWidgets import QApplication
+
+    asked = []
+    window = a_reader(monkeypatch, asked)
+    window.open_or_ask()
+    QApplication.instance().processEvents()      # the picker is queued
+    assert asked == [True]
+    assert window.isVisible(), "the picker should appear over the reader"
+    window.close()
+
+
+def test_a_reader_that_already_has_a_paper_is_not_interrupted(monkeypatch):
+    from PySide6.QtWidgets import QApplication
+
+    asked = []
+    window = a_reader(monkeypatch, asked)
+    window.doc = object()                        # as if a paper were open
+    window.open_or_ask()
+    QApplication.instance().processEvents()
+    assert asked == [], "reopening must not throw away the paper being read"
+    window.doc = None
+    window.close()
