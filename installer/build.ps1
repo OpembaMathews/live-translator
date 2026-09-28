@@ -20,8 +20,18 @@ $root    = Split-Path -Parent $here
 $payload = Join-Path $here "payload"
 $runtime = Join-Path $payload "runtime"
 
+# The version lives in the package and nowhere else. Passing it to ISCC
+# keeps the installer, the app and the updater from ever disagreeing about
+# which build somebody is running.
+$initText = Get-Content (Join-Path $root "livetranslator\__init__.py") -Raw
+if ($initText -notmatch '__version__\s*=\s*"([^"]+)"') {
+    throw "no __version__ in livetranslator\__init__.py"
+}
+$appVersion = $Matches[1]
+
 Write-Host "Live Translator installer build" -ForegroundColor Cyan
 Write-Host "  project : $root"
+Write-Host "  version : $appVersion"
 
 # --- a clean payload ------------------------------------------------------
 if (Test-Path $payload) { Remove-Item $payload -Recurse -Force }
@@ -130,7 +140,7 @@ if (-not $iscc) {
     exit 1
 }
 
-& $iscc (Join-Path $here "live-translator.iss")
+& $iscc "/DAppVersion=$appVersion" (Join-Path $here "live-translator.iss")
 $exe = Get-ChildItem (Join-Path $root "dist") -Filter "*setup.exe" |
        Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($exe) {

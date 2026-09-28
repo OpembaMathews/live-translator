@@ -179,3 +179,30 @@ def test_a_damaged_download_is_thrown_away(tmp_path, monkeypatch):
         update.download({"url": "https://example/u.zip",
                          "sha256": "0" * 64, "size": 21})
     assert not os.path.exists(os.path.join(update.STAGE, "update.zip"))
+
+
+# --- one version, in one place -------------------------------------------
+def test_the_installer_fallback_matches_the_package():
+    """build.ps1 passes the real version to Inno Setup, but the script also
+    compiles on its own. If that fallback drifts, an installer reports one
+    version while the app it installs reports another, and the updater then
+    offers a release the user already has."""
+    import re
+
+    from livetranslator import __version__
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    iss = open(os.path.join(here, "installer", "live-translator.iss"),
+               encoding="utf-8").read()
+    found = re.search(r'#define\s+AppVersion\s+"([^"]+)"', iss)
+    assert found, "the installer names no version at all"
+    assert found.group(1) == __version__, (
+        f"the installer says {found.group(1)}, the package says {__version__}")
+
+
+def test_the_version_looks_like_a_version():
+    import re
+
+    from livetranslator import __version__
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", __version__), __version__

@@ -8,7 +8,12 @@
 ; Build it with installer\build.ps1, which prepares the payload first.
 
 #define AppName      "Live Translator"
-#define AppVersion   "1.0.0"
+; build.ps1 reads __version__ out of the package and passes it in, so
+; there is one place a version is written. This is only the fallback
+; for compiling the script on its own, and a test keeps it in step.
+#ifndef AppVersion
+  #define AppVersion "1.1.0"
+#endif
 #define AppPublisher "Opemba Mathews"
 #define AppExe       "LiveTranslator.bat"
 
