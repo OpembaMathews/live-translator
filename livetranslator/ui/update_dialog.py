@@ -183,17 +183,25 @@ def look_quietly(on_found=None):
     looker.moveToThread(thread)
 
     def answered(manifest):
-        global _found, _looking
-        _looking = None
-        thread.quit()
+        global _found
         if manifest and update.newer(manifest.get("version", "")):
             _found = manifest
             log(f"update: version {manifest.get('version')} is available")
             if on_found:
                 on_found(manifest)
+        thread.quit()
+
+    def let_go():
+        # Only once the thread has actually stopped. Releasing the last
+        # reference from inside answered() dropped a QThread that was still
+        # running, Python collected it, and destroying a running QThread
+        # takes the process down -- the app closed a second after starting.
+        global _looking
+        _looking = None
 
     looker.answered.connect(answered)
     thread.started.connect(looker.run)
+    thread.finished.connect(let_go)
     _looking = (thread, looker)
     thread.start()
 

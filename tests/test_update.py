@@ -206,3 +206,54 @@ def test_the_version_looks_like_a_version():
     from livetranslator import __version__
 
     assert re.fullmatch(r"\d+\.\d+\.\d+", __version__), __version__
+
+
+# --- the startup check must not take the app down -------------------------
+def test_the_background_check_keeps_its_thread_alive_until_it_stops(monkeypatch):
+    """Releasing the last reference to a running QThread destroys it, and
+    destroying a running QThread aborts the process. The app started, checked
+    for updates, and closed about a second later."""
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui import update_dialog
+
+    monkeypatch.setattr(update_dialog.update, "look",
+                        lambda *a, **k: {"version": "0.0.1"})
+    update_dialog._looking = None
+    update_dialog._found = None
+
+    update_dialog.look_quietly()
+    held = update_dialog._looking
+    assert held is not None, "nothing is holding the thread"
+    thread = held[0]
+
+    for _ in range(200):
+        QCoreApplication.processEvents()
+        if update_dialog._looking is None:
+            break
+
+    assert thread.isFinished(), \
+        "the reference was released while the thread was still running"
+    assert update_dialog._looking is None, "the thread was never released"
+
+
+def test_an_unreachable_server_is_survived_at_startup(monkeypatch):
+    """A 404 from the releases URL is the normal state before the first
+    release, and it must not stop the app."""
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui import update_dialog
+
+    monkeypatch.setattr(update_dialog.update, "look", lambda *a, **k: None)
+    update_dialog._looking = None
+    update_dialog.look_quietly()
+    for _ in range(200):
+        QCoreApplication.processEvents()
+        if update_dialog._looking is None:
+            break
+    assert update_dialog._looking is None
+    assert update_dialog.waiting() is None
