@@ -118,6 +118,23 @@ class QtTranslator(LiveTranslator):
         self._size_name = name
         log(f"size -> {name}")
 
+    def reader_open(self):
+        reader = getattr(self, "reader", None)
+        return reader is not None and reader.isVisible()
+
+    def show_captions(self):
+        """Bring the caption bar back, listening again where it left off.
+
+        The transcript carries on in the same file, because a paper read in
+        the middle of a talk is an interruption, not a new session.
+        """
+        self.win.show()
+        self.win.raise_()
+        self.win.activateWindow()
+        self._pump.start(33)
+        if self.paused:
+            self.toggle_listening()
+
     def close(self):
         # The transcript is written before anything is torn down, so closing
         # the window is a normal way to end a session rather than losing it.
@@ -127,11 +144,20 @@ class QtTranslator(LiveTranslator):
                 log(f"transcript saved: {saved}")
         except Exception as e:
             log(f"could not save the transcript: {e}")
-        self.closing = True
+        # Closing the captions releases the microphone and puts the bar
+        # away. It used to quit outright, which took the reader with it --
+        # a paper being read aloud would stop halfway through.
+        if not self.paused:
+            self.toggle_listening()
+        self.win.hide()
         try:
             self._pump.stop()
         except Exception:
             pass
+        if self.reader_open():
+            log("captions closed; the reader is still open")
+            return
+        self.closing = True
         self.win.close()
         QApplication.instance().quit()
 
@@ -228,7 +254,7 @@ class QtTranslator(LiveTranslator):
         from .reader_window import ReaderWindow
 
         if getattr(self, "reader", None) is None:
-            self.reader = ReaderWindow(Voice)
+            self.reader = ReaderWindow(Voice, on_captions=self.show_captions)
         self.reader.show()
         self.reader.raise_()
         self.reader.activateWindow()

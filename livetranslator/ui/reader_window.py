@@ -277,9 +277,13 @@ class PageView(QWidget):
 class ReaderWindow(QMainWindow, chrome.Draggable):
     """Open a paper, read it aloud, follow along."""
 
-    def __init__(self, voice_factory):
+    def __init__(self, voice_factory, on_captions=None):
         super().__init__()
         self.voice_factory = voice_factory
+        # Only set when the reader was opened from the caption bar, so the
+        # reader run on its own does not offer to show a bar that is not
+        # there.
+        self.on_captions = on_captions
         self.voice = None
         self.player = None
         self.items = []
@@ -355,6 +359,13 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.language.setToolTip("Read the paper aloud in this language")
         self.language.currentIndexChanged.connect(self.change_language)
         row.addWidget(self.language)
+
+        if self.on_captions is not None:
+            captions = QPushButton("\u25a4")
+            captions.setObjectName("icon")
+            captions.setToolTip("Show the caption bar")
+            captions.clicked.connect(self.on_captions)
+            row.addWidget(captions)
 
         for glyph, tip, action in (("\u2014", "Minimise", self.showMinimized),
                                    ("\u2715", "Close", self.close)):
