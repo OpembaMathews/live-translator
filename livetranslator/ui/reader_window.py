@@ -371,6 +371,12 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             captions.clicked.connect(self.on_captions)
             row.addWidget(captions)
 
+        speak = QPushButton("\u2691")
+        speak.setObjectName("icon")
+        speak.setToolTip("Send feedback")
+        speak.clicked.connect(self.open_feedback)
+        row.addWidget(speak)
+
         for glyph, tip, action in (("\u2014", "Minimise", self.showMinimized),
                                    ("\u2715", "Close", self.close)):
             button = QPushButton(glyph)
@@ -575,6 +581,11 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.activateWindow()
         if self.doc is None:
             QTimer.singleShot(0, self.choose_file)
+
+    def open_feedback(self):
+        from .feedback_dialog import ask
+
+        ask(None, self)
 
     def choose_file(self):
         path, _ = QFileDialog.getOpenFileName(

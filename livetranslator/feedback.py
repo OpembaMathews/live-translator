@@ -28,13 +28,19 @@ from . import __version__
 from .log import log
 from .paths import APP_DIR, LOG_PATH
 
-# Where feedback is sent. Fill this in before handing the app to anyone: it
-# is the only thing standing between a report and nowhere to send it.
-FEEDBACK_TO = ""
+# Where feedback is sent. This ships in plain text inside the app, so it is
+# readable by anyone who installs it; the +livetranslator alias lets Gmail
+# file the reports on arrival and shows where the address leaked from if it
+# ever starts attracting spam.
+FEEDBACK_TO = "mathews.opemba+livetranslator@gmail.com"
 LOG_LINES = 120
 
 QUOTED = re.compile(r"""(['"])(.{4,}?)\1""", re.S)
-WINDOWS_PATH = re.compile(r"[A-Za-z]:[\\/][^\s'\"]+")
+# A path is matched up to its extension first. Stopping at whitespace left
+# "Beyond Peer Review.pdf" behind -- the title of the paper, which is the
+# part worth protecting.
+NAMED_FILE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[^\r\n|]*?\.[A-Za-z0-9]{1,5}\b")
+WINDOWS_PATH = re.compile(r"[A-Za-z]:[\\/]\S*")
 UNIX_PATH = re.compile(r"(?:/[^\s/'\"]+){2,}")
 HOME = re.compile(r"(?i)users[\\/][^\\/\s]+")
 
@@ -45,6 +51,7 @@ def redact(line):
         count = len(match.group(2).split())
         return f"<{count} word{'s' if count != 1 else ''} removed>"
 
+    line = NAMED_FILE.sub("<a file>", line)
     line = WINDOWS_PATH.sub("<a file>", line)
     line = UNIX_PATH.sub("<a file>", line)
     line = HOME.sub("users/<name>", line)
@@ -92,12 +99,12 @@ def about(app=None):
 
 def report(app=None, note=""):
     """The whole thing, as it will be sent, ready to be read first."""
-    out = [f"Live Translator feedback", f"Written {time.strftime('%Y-%m-%d %H:%M')}", ""]
+    out = ["Live Translator feedback", f"Written {time.strftime('%Y-%m-%d %H:%M')}", ""]
     if note.strip():
         out += ["What happened", "-------------", note.strip(), ""]
     out += ["About this machine", "------------------"]
     out += [f"{name}: {value}" for name, value in about(app)]
-    out += ["", f"Recent log, with speech and file paths removed",
+    out += ["", "Recent log, with speech and file paths removed",
             "---------------------------------------------"]
     out += recent_log()
     return "\n".join(out)

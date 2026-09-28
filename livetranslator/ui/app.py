@@ -272,6 +272,11 @@ class QtTranslator(LiveTranslator):
                                        on_closed=self.reader_closed)
         self.reader.open_or_ask()
 
+    def open_feedback(self):
+        from .feedback_dialog import ask
+
+        ask(self, self.win)
+
     def open_ai_dialog(self):
         dlg = AIKeyDialog(self.win, self.ai_provider, bool(self.ai_key),
                           self.ai_covers_speech, self._save_ai)
@@ -317,6 +322,9 @@ class QtTranslator(LiveTranslator):
         self._choice_menu(m.addMenu("Size"), SIZE_PRESETS,
                           self._size_name, self.set_size)
         self._opacity_menu(m.addMenu("Opacity"))
+        m.addSeparator()
+        fb = m.addAction("Send feedback...")
+        fb.triggered.connect(self.open_feedback)
         m.addSeparator()
         t = m.addAction("Save transcript and open it")
         t.triggered.connect(lambda: self.save_transcript(True))
