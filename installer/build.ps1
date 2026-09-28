@@ -50,7 +50,7 @@ if ($lines -notcontains "import site") { $lines += "import site" }
 if ($lines -notcontains "Lib\site-packages") { $lines += "Lib\site-packages" }
 # The embeddable build's ._pth replaces sys.path outright, so the folder
 # holding the app has to be named or "import livetranslator" fails. The
-# runtime sits at {app}untime, so ".." is the install folder itself.
+# runtime sits at <app>\runtime, so ".." is the app folder.
 if ($lines -notcontains "..") { $lines += ".." }
 $lines | Set-Content $pth.FullName -Encoding ASCII
 
@@ -107,10 +107,20 @@ if ($SkipCompile) {
     exit 0
 }
 
+# winget installs Inno Setup per-user by default, which is not in either
+# Program Files, so look there too rather than claiming it is missing.
 $iscc = @(
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
+    "$env:ProgramFiles\Inno Setup 7\ISCC.exe"
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+
+if (-not $iscc) {
+    $onPath = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+    if ($onPath) { $iscc = $onPath.Source }
+}
 
 if (-not $iscc) {
     Write-Host ""
