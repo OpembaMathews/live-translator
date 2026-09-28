@@ -388,6 +388,11 @@ class QtTranslator(LiveTranslator):
 
 def main():
     app = QApplication(sys.argv)
+    # Before anything asks for a model that is not there. A user who says
+    # no still gets the app; it will say what is missing when it needs it.
+    from ..first_run import ensure
+
+    ensure()
     # The caption bar is a Qt.Tool window, and Qt does not count those when
     # it decides the last window has closed. Left on, closing the reader
     # ended the app with the caption bar still on screen. Both windows now

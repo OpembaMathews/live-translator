@@ -901,6 +901,9 @@ def main():
     from ..reader.voice import Voice
 
     app = QApplication(sys.argv)
+    from ..first_run import ensure
+
+    ensure()
     window = ReaderWindow(Voice)
     if len(sys.argv) > 1:
         window.show()

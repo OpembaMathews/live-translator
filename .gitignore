@@ -11,3 +11,8 @@ __pycache__/
 
 # Research working notes; the finished reports are kept under docs/
 research_notes/
+
+# Installer build output: a private Python and the wheels pip fetches into
+# it. Built by installer/build.ps1, never committed.
+/installer/payload/
+/dist/
