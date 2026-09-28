@@ -118,6 +118,29 @@ begin
     end;
 end;
 
+function PercentIn(const Line: String): Integer;
+var
+  I, Start: Integer;
+begin
+  // The downloader prints "kokoro-v1.0.onnx (1 of 6): 45%" when nothing is
+  // watching. Reading that number back gives a bar that means something;
+  // before this it was a marquee that cycled whatever was happening, which
+  // told the user only that the installer had not frozen.
+  Result := -1;
+  I := Length(Line);
+  while (I > 0) and (Line[I] = ' ') do
+    I := I - 1;
+  if (I = 0) or (Line[I] <> '%') then
+    Exit;
+  I := I - 1;
+  Start := I;
+  while (Start > 0) and (Line[Start] >= '0') and (Line[Start] <= '9') do
+    Start := Start - 1;
+  if Start = I then
+    Exit;
+  Result := StrToIntDef(Copy(Line, Start + 1, I - Start), -1);
+end;
+
 function ExitCodeIn(const Path: String): Integer;
 var
   Lines: TArrayOfString;
@@ -189,7 +212,7 @@ procedure DownloadModels;
 var
   Page: TOutputProgressWizardPage;
   LogPath, DonePath, Command, Line: String;
-  Code, Tick: Integer;
+  Code, Tick, Percent: Integer;
 begin
   LogPath := ExpandConstant('{app}\model-download.log');
   DonePath := ExpandConstant('{app}\model-download.done');
@@ -217,8 +240,16 @@ begin
       if Line = '' then
         Line := 'Contacting the download servers...';
       Page.SetText(Copy(Line, 1, 90), '');
-      Tick := (Tick + 2) mod 100;
-      Page.SetProgress(Tick, 100);
+      Percent := PercentIn(Line);
+      if Percent >= 0 then
+        Page.SetProgress(Percent, 100)
+      else
+      begin
+        // No figure yet: looking up the index, or unzipping a pack. The
+        // bar creeps so the window does not look frozen.
+        Tick := (Tick + 2) mod 100;
+        Page.SetProgress(Tick, 100);
+      end;
       Sleep(400);
     end;
 

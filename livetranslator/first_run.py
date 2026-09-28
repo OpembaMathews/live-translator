@@ -105,8 +105,12 @@ class FirstRun(QDialog):
         self.detail.setText(text)
 
     def show_progress(self, name, got, total):
+        # Across the whole download, not one file at a time: a bar that ran
+        # nought to a hundred six times answered none of "how much longer".
         self.bar.setValue(int(100 * got / total) if total else 0)
-        self.bar.setFormat(f"{name}  %p%")
+        self.bar.setFormat(
+            f"{got / 1e6:.0f} of {total / 1e6:.0f} MB — %p%")
+        self.detail.setText(name)
 
     def finished(self, ok, problem):
         self.ok = ok

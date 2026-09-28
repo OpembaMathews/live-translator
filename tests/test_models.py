@@ -135,7 +135,7 @@ def test_a_pack_with_no_download_listed_is_survived(monkeypatch, tmp_path):
     monkeypatch.setattr(models, "pack_links",
                         lambda: {("zt", "en"): "https://example/z.argosmodel"})
     monkeypatch.setattr(models, "install_pack",
-                        lambda url, root: calls.__setitem__("n", calls["n"] + 1))
+                        lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
     models.install()
     assert calls["n"] == 1, "the pack that was listed still installs"
 
@@ -161,3 +161,60 @@ def test_the_index_really_lists_every_pack():
     for pair in models.WANTED:
         assert pair in links, f"{pair} is not in the Argos index any more"
         assert links[pair].endswith(".argosmodel")
+
+
+# --- what a person watching actually sees ---------------------------------
+def test_progress_is_across_the_whole_download_not_each_file(monkeypatch):
+    """A bar that ran nought to a hundred six times answered nothing."""
+    monkeypatch.setattr(models, "voice_missing", lambda: ["a.onnx", "b.bin"])
+    monkeypatch.setattr(models, "packs_missing", lambda: [])
+    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 300), ("b.bin", 100)))
+
+    def pretend(url, dest, on_progress=None, expected=0):
+        for got in (expected // 2, expected):
+            on_progress(os.path.basename(dest), got, expected)
+
+    monkeypatch.setattr(models, "fetch", pretend)
+    seen = []
+    models.install(on_progress=lambda n, got, total: seen.append((got, total)))
+
+    assert [t for _g, t in seen] == [400] * len(seen), "the total must not move"
+    assert [g for g, _t in seen] == sorted(g for g, _t in seen), \
+        "the bar must never go backwards"
+    assert seen[-1][0] == 400, "it has to reach the end"
+
+
+def test_each_step_says_where_it_is_in_the_queue(monkeypatch):
+    monkeypatch.setattr(models, "voice_missing", lambda: ["a.onnx"])
+    monkeypatch.setattr(models, "packs_missing", lambda: [("en", "zt")])
+    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 10),))
+    monkeypatch.setattr(models, "fetch", lambda *a, **k: None)
+    monkeypatch.setattr(models, "pack_links",
+                        lambda: {("en", "zt"): "https://x/p.argosmodel"})
+    monkeypatch.setattr(models, "install_pack", lambda *a, **k: None)
+    steps = []
+    models.install(on_step=steps.append)
+    assert any("1 of 2" in s for s in steps)
+    assert any("2 of 2" in s for s in steps)
+
+
+def test_the_plain_line_ends_in_a_percentage(monkeypatch, capsys):
+    """The installer reads the figure off the end of the line to drive its
+    bar, so the shape of this line is a contract, not a convenience."""
+    monkeypatch.setattr(models, "watching", lambda: False)
+    monkeypatch.setattr(models, "voice_missing", lambda: ["a.onnx"])
+    monkeypatch.setattr(models, "packs_missing", lambda: [])
+    monkeypatch.setattr(models, "VOICE_FILES", (("a.onnx", 100),))
+
+    def pretend(url, dest, on_progress=None, expected=0):
+        for got in (10, 50, 100):
+            on_progress("a.onnx (1 of 1)", got, expected)
+
+    monkeypatch.setattr(models, "fetch", pretend)
+    models.main()
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.endswith("%")]
+    assert lines, "nothing the installer could read"
+    for line in lines:
+        figure = line.rsplit(":", 1)[-1].strip().rstrip("%")
+        assert figure.isdigit(), f"not parseable: {line!r}"
+        assert 0 <= int(figure) <= 100

@@ -17,6 +17,7 @@ again.
 import json
 import os
 import shutil
+import sys
 import urllib.request
 import zipfile
 
@@ -36,6 +37,17 @@ WANTED = (("en", "zt"), ("zt", "en"), ("en", "sw"), ("sw", "en"))
 VOICE_FILES = (("kokoro-v1.0.onnx", 325_522_944),
                ("voices-v1.0.bin", 28_182_016))
 CHUNK = 1 << 16
+# The four packs are 71-76 MB. Their exact size is only known once the index
+# has been fetched, and the estimate only has to be close enough for a bar.
+PACK_SIZE = 75_000_000
+
+
+def watching():
+    """Whether a person is looking at this, or a log file is collecting it."""
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
 
 
 def voice_dir():
@@ -60,7 +72,7 @@ def missing():
     voices = voice_missing()
     packs = packs_missing()
     size = sum(s for n, s in VOICE_FILES if n in voices)
-    size += 75_000_000 * len(packs)          # the four packs are 71-76 MB
+    size += PACK_SIZE * len(packs)
     return voices, packs, size
 
 
@@ -98,11 +110,11 @@ def pack_links():
     return links
 
 
-def install_pack(url, dest_root):
+def install_pack(url, dest_root, on_progress=None, expected=0):
     """An .argosmodel is a zip holding one folder; unpack it as it is."""
     name = url.rsplit("/", 1)[-1]
     archive = os.path.join(dest_root, name)
-    fetch(url, archive)
+    fetch(url, archive, on_progress, expected=expected)
     try:
         with zipfile.ZipFile(archive) as zf:
             inside = {n.split("/")[0] for n in zf.namelist() if "/" in n}
@@ -113,27 +125,47 @@ def install_pack(url, dest_root):
 
 
 def install(on_progress=None, on_step=None):
-    """Fetch whatever is missing. Safe to run again; it skips what is there."""
+    """Fetch whatever is missing. Safe to run again; it skips what is there.
+
+    Progress is reported across the whole download, not per file. There are
+    six things to fetch and a bar that ran nought to a hundred six times
+    told the user nothing about how long was left -- which is the only
+    question a progress bar exists to answer.
+    """
     step = on_step or (lambda text: None)
-    voices, packs, _size = missing()
+    voices, packs, total = missing()
+    jobs = len(voices) + len(packs)
+    done = [0]          # bytes finished before the item now downloading
+    at = [0]            # which item that is
+
+    def overall(name, got, _size):
+        at_now = min(done[0] + got, total)
+        if on_progress:
+            on_progress(f"{name} ({at[0]} of {jobs})", at_now, total)
 
     for name in voices:
-        step(f"Downloading the voice: {name}")
+        at[0] += 1
         size = dict(VOICE_FILES)[name]
+        step(f"Downloading the voice, {at[0]} of {jobs}: {name}")
         fetch(KOKORO + name, os.path.join(voice_dir(), name),
-              on_progress, expected=size)
+              overall, expected=size)
+        done[0] += size
         log(f"models: fetched {name}")
 
     if packs:
-        step("Looking up the translation packs")
+        step(f"Looking up the translation packs ({at[0]} of {jobs} done)")
         links = pack_links()
         for pair in packs:
+            at[0] += 1
             url = links.get(pair)
             if not url:
                 log(f"models: no download listed for {pair[0]}->{pair[1]}")
+                done[0] += PACK_SIZE
                 continue
-            step(f"Downloading translation: {pair[0]} to {pair[1]}")
-            install_pack(url, PACK_DIR)
+            step(f"Downloading translation {at[0]} of {jobs}: "
+                 f"{pair[0]} to {pair[1]}")
+            install_pack(url, PACK_DIR, overall, expected=PACK_SIZE)
+            done[0] += PACK_SIZE
             log(f"models: installed pack {pair[0]}->{pair[1]}")
 
     left_voices, left_packs, _ = missing()
@@ -142,8 +174,6 @@ def install(on_progress=None, on_step=None):
 
 def main():
     """python -m livetranslator.models -- fetch everything, with a bar."""
-    import sys
-
     voices, packs, size = missing()
     if not voices and not packs:
         print("Everything is already downloaded.")
@@ -154,7 +184,7 @@ def main():
     # A bar redrawn with \r is right in a terminal and useless in a log,
     # where it arrives as one enormous line. The installer reads this
     # through a log, so when nothing is watching it prints plain lines.
-    live = sys.stdout.isatty()
+    live = watching()
     width = shutil.get_terminal_size((70, 20)).columns - 34
     last = {"percent": -100}
 
