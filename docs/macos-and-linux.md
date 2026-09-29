@@ -1,5 +1,9 @@
 # Running on macOS and Linux
 
+**On Windows, none of this applies.** Use the installer, or `run.bat` and
+`read.bat` to run from source. `./run.sh` in PowerShell answers "command not
+found", because a shell script is not something Windows knows how to run.
+
 The app runs from source on all three systems. There is no Mac installer:
 building a `.app` needs a Mac, and shipping one without a $99-a-year Apple
 Developer account means every user meets *"cannot be opened because the
@@ -8,11 +12,15 @@ developer cannot be verified"*. Running from source skips all of that.
 ## On a Mac
 
 ```sh
-brew install portaudio          # PyAudio builds against this
+brew install portaudio             # PyAudio builds against this
 pip3 install -r requirements.txt
 python3 -m livetranslator.models   # the voice and the language packs
+chmod +x run.sh read.sh            # a zip does not carry the executable bit
 ./run.sh
 ```
+
+If `./run.sh` says "permission denied", the `chmod` line was missed. If it
+says "no such file", you are not in the folder that was unzipped.
 
 `./read.sh` opens the paper reader on its own, and takes a PDF path.
 
@@ -26,6 +34,7 @@ Everything else installs as a wheel.
 sudo apt install portaudio19-dev    # or the equivalent
 pip3 install -r requirements.txt
 python3 -m livetranslator.models
+chmod +x run.sh read.sh
 ./run.sh
 ```
 
