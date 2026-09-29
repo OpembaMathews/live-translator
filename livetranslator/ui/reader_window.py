@@ -912,6 +912,11 @@ def main():
     from ..reader.voice import Voice
 
     app = QApplication(sys.argv)
+    # Before any window: the taskbar decides its grouping,
+    # and its icon, the first time one appears.
+    from .branding import apply_to
+
+    apply_to(app)
     from ..first_run import ensure
 
     ensure()

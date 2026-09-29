@@ -403,6 +403,11 @@ class QtTranslator(LiveTranslator):
 
 def main():
     app = QApplication(sys.argv)
+    # Before any window: the taskbar decides its grouping,
+    # and its icon, the first time one appears.
+    from .branding import apply_to
+
+    apply_to(app)
     # Before anything asks for a model that is not there. A user who says
     # no still gets the app; it will say what is missing when it needs it.
     from ..first_run import ensure

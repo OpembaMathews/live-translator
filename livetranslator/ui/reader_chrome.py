@@ -237,11 +237,11 @@ def card(parent=None):
 
 
 def app_icon():
-    """The app's own icon, for the header badge."""
-    here = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))
-    path = os.path.join(here, "assets", "translator.ico")
-    return QIcon(path) if os.path.exists(path) else QIcon()
+    """The app's own icon. One definition, in branding, so the window, the
+    header badge and the taskbar can never disagree about it."""
+    from .branding import app_icon as shared
+
+    return shared()
 
 
 def readable_size(path):
