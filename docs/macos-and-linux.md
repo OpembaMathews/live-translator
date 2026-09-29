@@ -15,14 +15,22 @@ developer cannot be verified"*. Running from source skips all of that.
 brew install portaudio             # PyAudio builds against this
 pip3 install -r requirements.txt
 python3 -m livetranslator.models   # the voice and the language packs
-chmod +x run.sh read.sh            # a zip does not carry the executable bit
-./run.sh
+sh run.sh
 ```
 
-If `./run.sh` says "permission denied", the `chmod` line was missed. If it
-says "no such file", you are not in the folder that was unzipped.
+`sh run.sh` rather than `./run.sh`: a zip does not carry the executable bit,
+so a freshly unzipped copy answers **"zsh: permission denied"**. Running it
+through `sh` needs no such bit and always works. To use `./run.sh` and the
+Finder from then on:
 
-`./read.sh` opens the paper reader on its own, and takes a PDF path.
+```sh
+chmod +x run.sh read.sh
+```
+
+Do not put `sudo` in front of either. The app is entirely per-user, and as
+root it writes files into your Library that you then cannot change.
+
+`sh read.sh` opens the paper reader on its own, and takes a PDF path.
 
 `brew install portaudio` is the one extra step. PyAudio publishes no wheel
 for Apple silicon, so pip builds it, and the build needs PortAudio's headers.
@@ -34,8 +42,7 @@ Everything else installs as a wheel.
 sudo apt install portaudio19-dev    # or the equivalent
 pip3 install -r requirements.txt
 python3 -m livetranslator.models
-chmod +x run.sh read.sh
-./run.sh
+sh run.sh
 ```
 
 ## What works, and what does not
