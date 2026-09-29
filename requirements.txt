@@ -2,9 +2,17 @@
 faster-whisper
 SpeechRecognition
 
-# Audio in: PyAudio for microphones, PyAudioWPatch for system-audio loopback
+# Audio in: PyAudio for microphones, PyAudioWPatch for system-audio loopback.
+#
+# PyAudioWPatch wraps WASAPI, which only Windows has, so pip must not try to
+# install it anywhere else. macOS has no way to capture what the speakers are
+# playing at all; BlackHole (free) presents system audio as an ordinary input
+# device instead, and the app then treats it like any microphone.
+#
+# On macOS PyAudio builds from source and needs PortAudio first:
+#     brew install portaudio
 PyAudio
-PyAudioWPatch
+PyAudioWPatch; sys_platform == "win32"
 numpy
 
 # Local translation, running the Argos language packs directly
@@ -13,3 +21,8 @@ sentencepiece
 
 # The window
 PySide6-Essentials
+
+# Reading documents aloud
+pymupdf
+kokoro-onnx
+soundfile

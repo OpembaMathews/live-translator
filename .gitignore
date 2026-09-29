@@ -2,8 +2,17 @@
 translator.log
 settings.json
 transcripts/
+# What this machine has learned, and what is still waiting to be
+# corrected. The shipped seed lives in data/ and is tracked.
+/translation-memory.json
+/to-correct/
 __pycache__/
 *.pyc
 
 # Research working notes; the finished reports are kept under docs/
 research_notes/
+
+# Installer build output: a private Python and the wheels pip fetches into
+# it. Built by installer/build.ps1, never committed.
+/installer/payload/
+/dist/

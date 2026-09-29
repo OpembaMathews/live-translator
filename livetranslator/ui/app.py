@@ -118,6 +118,39 @@ class QtTranslator(LiveTranslator):
         self._size_name = name
         log(f"size -> {name}")
 
+    def reader_closed(self):
+        """The reader has gone. Quit only if the caption bar went first."""
+        if self.win.isVisible():
+            return
+        log("reader closed with the captions already away; quitting")
+        self.quit()
+
+    def quit(self):
+        self.closing = True
+        try:
+            self._pump.stop()
+        except Exception:
+            pass
+        self.win.close()
+        QApplication.instance().quit()
+
+    def reader_open(self):
+        reader = getattr(self, "reader", None)
+        return reader is not None and reader.isVisible()
+
+    def show_captions(self):
+        """Bring the caption bar back, listening again where it left off.
+
+        The transcript carries on in the same file, because a paper read in
+        the middle of a talk is an interruption, not a new session.
+        """
+        self.win.show()
+        self.win.raise_()
+        self.win.activateWindow()
+        self._pump.start(33)
+        if self.paused:
+            self.toggle_listening()
+
     def close(self):
         # The transcript is written before anything is torn down, so closing
         # the window is a normal way to end a session rather than losing it.
@@ -127,13 +160,20 @@ class QtTranslator(LiveTranslator):
                 log(f"transcript saved: {saved}")
         except Exception as e:
             log(f"could not save the transcript: {e}")
-        self.closing = True
+        # Closing the captions releases the microphone and puts the bar
+        # away. It used to quit outright, which took the reader with it --
+        # a paper being read aloud would stop halfway through.
+        if not self.paused:
+            self.toggle_listening()
+        self.win.hide()
         try:
             self._pump.stop()
         except Exception:
             pass
-        self.win.close()
-        QApplication.instance().quit()
+        if self.reader_open():
+            log("captions closed; the reader is still open")
+            return
+        self.quit()
 
     # -- UI methods the engine half drives ---------------------------------
     def on_ui(self, fn):
@@ -222,6 +262,26 @@ class QtTranslator(LiveTranslator):
 
         self.on_ui(apply)
 
+    def open_reader(self):
+        """The document reader, in its own window beside the captions."""
+        from ..reader.voice import Voice
+        from .reader_window import ReaderWindow
+
+        if getattr(self, "reader", None) is None:
+            self.reader = ReaderWindow(Voice, on_captions=self.show_captions,
+                                       on_closed=self.reader_closed)
+        self.reader.open_or_ask()
+
+    def check_updates(self):
+        from .update_dialog import check_now
+
+        check_now(self.win)
+
+    def open_feedback(self):
+        from .feedback_dialog import ask
+
+        ask(self, self.win)
+
     def open_ai_dialog(self):
         dlg = AIKeyDialog(self.win, self.ai_provider, bool(self.ai_key),
                           self.ai_covers_speech, self._save_ai)
@@ -261,9 +321,17 @@ class QtTranslator(LiveTranslator):
         ai = m.addAction("AI translation...")
         ai.triggered.connect(self.open_ai_dialog)
         m.addSeparator()
+        paper = m.addAction("Read a paper...")
+        paper.triggered.connect(self.open_reader)
+        m.addSeparator()
         self._choice_menu(m.addMenu("Size"), SIZE_PRESETS,
                           self._size_name, self.set_size)
         self._opacity_menu(m.addMenu("Opacity"))
+        m.addSeparator()
+        up = m.addAction("Check for updates...")
+        up.triggered.connect(self.check_updates)
+        fb = m.addAction("Send feedback...")
+        fb.triggered.connect(self.open_feedback)
         m.addSeparator()
         t = m.addAction("Save transcript and open it")
         t.triggered.connect(lambda: self.save_transcript(True))
@@ -335,7 +403,32 @@ class QtTranslator(LiveTranslator):
 
 def main():
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(True)
+    # Before any window: the taskbar decides its grouping,
+    # and its icon, the first time one appears.
+    from .branding import apply_to
+
+    apply_to(app)
+    # Before anything asks for a model that is not there. A user who says
+    # no still gets the app; it will say what is missing when it needs it.
+    from ..first_run import ensure
+
+    ensure()
+    # Anything an earlier version wrote beside the code
+    # belongs in the app-data folder now.
+    from ..paths import migrate
+    from ..log import log as write_log
+
+    migrate(report=write_log)
+    # A quiet look for a newer version. It never interrupts: if one is
+    # found the menu says so, and nothing is downloaded unasked.
+    from ..ui.update_dialog import look_quietly
+
+    look_quietly()
+    # The caption bar is a Qt.Tool window, and Qt does not count those when
+    # it decides the last window has closed. Left on, closing the reader
+    # ended the app with the caption bar still on screen. Both windows now
+    # say for themselves whether anything is left to stay open for.
+    app.setQuitOnLastWindowClosed(False)
     translator = QtTranslator()
     apply_startup_options(translator, sys.argv)
     translator.run()

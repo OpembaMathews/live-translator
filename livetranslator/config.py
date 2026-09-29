@@ -87,10 +87,26 @@ LOOPBACK_THRESHOLD = 120.0
 # Media latency is window + ~0.7s of processing, so the window IS the delay.
 # Measured coverage against a reference: 2.5s->89%, 3.0s->90%, 5.0s->94%, so
 # most of the accuracy survives a much shorter window.
+# (silence before a phrase ends, longest phrase, media window, overlap).
+# The first two are for a microphone, the last two for media.
+#
+# The media windows were 2.5-5.0s and that was far too short. Whisper reads
+# a window with no knowledge of the one before, so a three-second slice of
+# Mandarin gave it almost no context to work with. Measured on 25 seconds of
+# a Chinese video, one model, only the window length changed:
+#
+#     3s   11 fragments, mostly nonsense       21.5s of CPU
+#     6s   5 pieces, much of it right          12.5s
+#    10s   3 pieces, close to a single pass     7.7s
+#    25s   one pass, correct                    3.5s
+#
+# Longer windows are more accurate and cheaper, because each call to the
+# model costs the same regardless of how much audio it is given. The only
+# thing they cost is delay, which is why the choice is still offered.
 RESPONSE_PRESETS = {
-    "Fast": (0.45, 3.0, 2.5, 0.7),
-    "Balanced": (0.65, 4.0, 3.0, 0.8),
-    "Accurate": (0.90, 5.0, 5.0, 1.2),
+    "Fast": (0.45, 3.0, 5.0, 1.0),
+    "Balanced": (0.65, 4.0, 8.0, 1.2),
+    "Accurate": (0.90, 5.0, 12.0, 1.5),
 }
 DEFAULT_RESPONSE = "Balanced"
 # Media (a podcast, a video) is continuous speech with few natural pauses, so

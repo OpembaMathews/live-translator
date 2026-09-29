@@ -69,6 +69,12 @@ class LiveTranslator:
         self._stream_done = {}     # sentence -> translation, for this utterance
         self.session = SessionLog()
         self.jobs = queue.Queue(maxsize=MAX_PENDING)
+        # Until the first caption appears there is nothing on screen to say
+        # the app is working, so capture itself reports. Cleared once a
+        # caption has been shown, because after that the captions are the
+        # feedback.
+        self._captions_shown = 0
+        self._phrases_caught = 0
         self.stt_kind = STT_ENGINE
         self.whisper_choice = DEFAULT_WHISPER
         self._stt_cache = {}
@@ -198,6 +204,8 @@ class LiveTranslator:
         if self.paused:
             self._listening = False
             self._level_raw = 0.0
+            self._phrases_caught = 0
+            self._captions_shown = 0
             self.show_status("Stopped - press play to listen")
         else:
             self.show_status("Starting...")
@@ -476,6 +484,7 @@ class LiveTranslator:
             waits = 0
             seconds = len(audio.frame_data) / (audio.sample_rate * audio.sample_width)
             log(f"phrase captured: {seconds:.1f}s")
+            self.note_capture(seconds)
 
             # Hand off and go straight back to listening. Doing recognition
             # here would leave the microphone deaf for the ~1s it takes, so
@@ -487,6 +496,34 @@ class LiveTranslator:
                 except queue.Empty:
                     pass
             self.jobs.put((audio, time.time()))
+
+    def note_capture(self, seconds):
+        """Tell the user audio is arriving, before anything is recognised.
+
+        Between the microphone opening and the first caption there can be
+        most of a minute: phrases are captured, and each one that turns out
+        to hold no recognisable speech shows nothing at all. The status line
+        said "Listening" throughout, which is indistinguishable from broken.
+
+        Once captions are flowing they are the feedback, so this stops.
+
+        It deliberately does not count what it has heard. Nothing is being
+        saved up: a phrase is transcribed as it arrives and discarded if
+        there is no speech in it. Saying "5 phrases heard" read as though
+        the app were collecting words to deal with later.
+        """
+        self._phrases_caught += 1
+        if self._captions_shown:
+            return
+        if self._phrases_caught == 1:
+            self.show_status("Transcribing - the first caption is seconds away",
+                             busy=True)
+        elif self._phrases_caught in (4, 10):
+            # Audio is definitely arriving and nothing has come back, so the
+            # useful thing now is what to do about it, not a tally.
+            self.show_status("Nothing clear enough to caption yet - "
+                             "try speaking closer to the microphone",
+                             busy=True)
 
     def capture_continuous(self, source, gen):
         """Fixed overlapping windows, for media rather than conversation.
@@ -525,6 +562,7 @@ class LiveTranslator:
                     log("  (behind - dropped an older window)")
                 except queue.Empty:
                     pass
+            self.note_capture(len(payload) / (rate * width))
             self.jobs.put((sr.AudioData(payload, rate, width), time.time()))
 
     def stream_loop(self, source, gen):
@@ -797,13 +835,16 @@ class LiveTranslator:
                 self.show_status(
                     f"That sounded like {other}. Switch Speaking to Auto detect")
                 continue
-            except NoSpeech:
+            except NoSpeech as nothing:
                 quiet += 1
+                # Every discarded phrase is logged. 846 captured phrases
+                # once produced 51 captions, and the other 795 left no trace
+                # at all, which made the loss impossible to account for.
+                because = str(nothing) or "no reason given"
+                log(f"  -> nothing usable ({quiet}): {because}")
                 if quiet in (6, 30) and self.device_kind == "loopback":
                     self.show_status("No speech on this output - is playback"
                                      " going to a different device?")
-                elif quiet == 12:
-                    log(f"  -> {quiet} chunks with no speech in them")
                 continue
             except sr.UnknownValueError:
                 unclear += 1
@@ -855,6 +896,7 @@ class LiveTranslator:
             log(f"  translated +{time.time() - heard_at:.2f}s "
                 f"(total {time.time() - captured_at:.2f}s): {translated!r}")
             self.session.add(text, translated, source_lang, target_lang)
+            self._captions_shown += 1
             self.on_ui(lambda h=text, t=translated: self.show_pair(h, t))
 
     def build_ui(self):
@@ -889,7 +931,9 @@ class LiveTranslator:
 
 
 def apply_startup_options(app, argv):
-    """--device <text> picks an input by name; --input auto|en|zt sets language."""
+    """Startup flags: --device <text> picks an input by name, --input and
+    --target set languages, --response picks how long a window the model
+    gets."""
     if "--input" in argv:
         mode = argv[argv.index("--input") + 1]
         if mode == "auto" or mode in LANGUAGES:
@@ -901,6 +945,17 @@ def apply_startup_options(app, argv):
         if mode == "auto" or mode in LANGUAGES:
             app.target_mode = mode
             log(f"startup: target {mode}")
+
+    if "--response" in argv:
+        # Named as in the menu, but case does not matter from a shortcut
+        wanted = argv[argv.index("--response") + 1].strip().lower()
+        match = next((n for n in RESPONSE_PRESETS if n.lower() == wanted), None)
+        if match:
+            app.response = match
+            log(f"startup: response {match}")
+        else:
+            log(f"startup: no response preset {wanted!r}; "
+                f"have {list(RESPONSE_PRESETS)}")
 
     if "--device" in argv:
         wanted = argv[argv.index("--device") + 1].lower()

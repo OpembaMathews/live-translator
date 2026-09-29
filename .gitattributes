@@ -1,0 +1,9 @@
+# Shell scripts must keep Unix line endings whatever machine commits them.
+# Checked out with CRLF on a Mac, /bin/sh reports "bad interpreter: ^M" and
+# the launcher will not run at all.
+*.sh text eol=lf
+
+# Windows batch files are the mirror image: they need CRLF.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.iss text eol=crlf

@@ -120,6 +120,9 @@ class CaptionWindow(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        from .branding import app_icon
+
+        self.setWindowIcon(app_icon())
         self.setMouseTracking(True)
         self.setWindowTitle("Live Translator")
 
