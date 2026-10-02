@@ -287,9 +287,35 @@ def open_document(path):
     return pymupdf.open(path)
 
 
+def mend_broken_words(rows):
+    """Join a block that ends mid-word to the one that follows it.
+
+    A word hyphenated across a line break is put back together within a
+    block, but the break sometimes falls between two blocks: a paper read
+    "and have tra-" and then "ditionally been an urban marginalized area",
+    which sounds exactly like a word being skipped.
+
+    The two are merged into the first, keeping its place on the page. The
+    highlight still lands correctly because it is found by matching the
+    sentence against the page's characters, which run on across the join.
+    """
+    out = []
+    for row in rows:
+        if out and out[-1].text.endswith("-") and row.text[:1].islower():
+            before = out[-1]
+            stem = re.search(r"(\w+)-$", before.text)
+            keep = bool(stem) and stem.group(1).lower() in KEEP_HYPHEN
+            joined = before.text + row.text if keep                 else before.text[:-1] + row.text
+            out[-1] = Line(before.page, before.bbox, before.action,
+                           before.reason, joined)
+            continue
+        out.append(row)
+    return out
+
+
 def read_lines(doc):
     """Only the blocks to be read aloud, in order."""
-    return [r for r in plan(doc) if r.action == READ]
+    return mend_broken_words([r for r in plan(doc) if r.action == READ])
 
 
 def text_in(doc, pages=6):

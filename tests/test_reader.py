@@ -688,3 +688,52 @@ def test_a_page_with_no_rule_loses_nothing(tmp_path):
     doc.save(path)
     doc = document.open_document(path)
     assert document.footnote_line(doc[0]) is None
+
+
+# --- words broken across a block boundary ---------------------------------
+def a_line(text, page=0, y=100):
+    return document.Line(page, (50, y, 500, y + 12), document.READ, "text", text)
+
+
+def test_a_word_split_between_blocks_is_put_back_together():
+    """A paper read "and have tra-" and then "ditionally been an urban
+    marginalized area", which sounds exactly like a word being skipped."""
+    rows = document.mend_broken_words([
+        a_line("La Campana-Altamira are two hills, and have tra-"),
+        a_line("ditionally been an urban marginalized area.", y=116),
+    ])
+    assert len(rows) == 1
+    assert "have traditionally been" in rows[0].text
+
+
+def test_the_join_keeps_the_place_of_the_first_block():
+    """The highlight is found by matching against the page's characters,
+    which run on across the join, so the first position is the right one."""
+    rows = document.mend_broken_words([
+        a_line("something inter-", y=200),
+        a_line("esting happened.", y=216),
+    ])
+    assert rows[0].bbox[1] == 200
+
+
+def test_a_hyphen_that_belongs_to_the_word_is_kept():
+    rows = document.mend_broken_words([
+        a_line("they described their own well-"),
+        a_line("being as the reason.", y=116),
+    ])
+    assert "well-being" in rows[0].text
+
+
+def test_a_block_ending_in_a_dash_before_a_capital_is_left_alone():
+    """A sentence may legitimately end on a dash; the next block starting
+    with a capital is a new sentence, not the rest of a word."""
+    rows = document.mend_broken_words([
+        a_line("a thought interrupted-"),
+        a_line("Then something else began.", y=116),
+    ])
+    assert len(rows) == 2
+
+
+def test_nothing_happens_when_no_word_is_broken():
+    rows = [a_line("One complete sentence."), a_line("Another one.", y=116)]
+    assert len(document.mend_broken_words(rows)) == 2
