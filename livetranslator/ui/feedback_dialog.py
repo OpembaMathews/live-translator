@@ -31,6 +31,7 @@ def reveal(path):
     except Exception as e:
         log(f"feedback: could not open the folder: {type(e).__name__}: {e}")
 
+from .branding import style_dialog
 
 class FeedbackDialog(QDialog):
     """What happened, what will be sent, and a way to send it."""
@@ -89,6 +90,7 @@ class FeedbackDialog(QDialog):
         buttons.addWidget(close)
         buttons.addWidget(self.send)
         layout.addLayout(buttons)
+        style_dialog(self)
 
         self.note.textChanged.connect(self.refresh)
         self.refresh()

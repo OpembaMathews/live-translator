@@ -19,6 +19,7 @@ from ..log import log
 _looking = None          # the startup check, kept alive while it runs
 _found = None            # what it found, for the menu to offer later
 
+from .branding import style_dialog
 
 class Looker(QObject):
     """Asks GitHub what the latest release is, off the UI thread."""
@@ -108,6 +109,7 @@ class UpdateDialog(QDialog):
         buttons.addWidget(self.later)
         buttons.addWidget(self.go)
         layout.addLayout(buttons)
+        style_dialog(self)
 
     def begin(self):
         self.go.setEnabled(False)

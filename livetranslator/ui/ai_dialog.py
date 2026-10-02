@@ -37,6 +37,7 @@ PROVIDERS = (("off", "Off, use the local models"),
              ("claude", "Claude"),
              ("gemini", "Gemini"))
 
+from .branding import style_dialog
 
 class AIKeyDialog(QDialog):
     def __init__(self, parent, provider, has_key, covers_speech, on_save):
@@ -104,6 +105,7 @@ class AIKeyDialog(QDialog):
         lay.addSpacing(6)
         lay.addLayout(buttons)
         self._sync()
+        style_dialog(self)
 
     def provider(self):
         b = self.group.checkedButton()

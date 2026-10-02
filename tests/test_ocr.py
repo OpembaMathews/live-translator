@@ -173,3 +173,14 @@ def test_splitting_a_whole_page_is_quick():
     for line in lines:
         ocr.space_out(line, vocab)
     assert time.perf_counter() - start < 2.0
+
+
+def test_improving_the_code_invalidates_what_was_kept(tmp_path, monkeypatch):
+    """A kept copy is the output of this code, not just of this file. An
+    improvement nobody sees because the old answer is still on disk is no
+    improvement at all."""
+    path = tmp_path / "paper.pdf"
+    path.write_bytes(b"%PDF-1.4 unchanged")
+    before = ocr.cache_path(str(path))
+    monkeypatch.setattr(ocr, "VERSION", ocr.VERSION + 1)
+    assert ocr.cache_path(str(path)) != before

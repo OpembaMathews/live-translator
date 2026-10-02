@@ -32,6 +32,7 @@ def _release():
     global _running
     _running = None
 
+from .ui.branding import style_dialog
 
 class Fetcher(QObject):
     """Runs the download on a thread of its own and reports back."""
@@ -130,6 +131,7 @@ class FirstRun(QDialog):
         self.start.clicked.connect(self.begin)
         buttons.addWidget(self.start)
         layout.addLayout(buttons)
+        style_dialog(self)
 
     def begin(self):
         self.start.setEnabled(False)

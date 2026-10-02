@@ -18,6 +18,7 @@ from ..reader import ocr
 
 PACKAGE = "rapidocr-onnxruntime"
 
+from .branding import style_dialog
 
 class Installer(QObject):
     """Fetches the recogniser with the same pip the app runs on."""
@@ -131,6 +132,7 @@ class RecogniseDialog(QDialog):
         buttons.addWidget(self.later)
         buttons.addWidget(self.go)
         layout.addLayout(buttons)
+        style_dialog(self)
 
     # -- installing, if it is not here yet ---------------------------------
     def begin(self):

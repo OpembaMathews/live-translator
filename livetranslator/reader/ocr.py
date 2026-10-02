@@ -23,6 +23,10 @@ from ..log import log
 from ..paths import APP_DIR
 
 CACHE = os.path.join(APP_DIR, "recognised")
+# Bumped whenever recognition or the spacing changes. A kept copy is the
+# output of this code, not just of this file, so an improvement that nobody
+# ever sees because the old answer is still on disk is no improvement.
+VERSION = 2
 # 200 dpi reads cleanly and costs about twelve seconds a page here. 300 is
 # barely better on text this size and takes half as long again.
 DPI = 200
@@ -60,9 +64,9 @@ def cache_path(pdf_path):
     """
     try:
         stat = os.stat(pdf_path)
-        stamp = f"{pdf_path}|{stat.st_size}|{int(stat.st_mtime)}"
+        stamp = f"v{VERSION}|{pdf_path}|{stat.st_size}|{int(stat.st_mtime)}"
     except OSError:
-        stamp = pdf_path
+        stamp = f"v{VERSION}|{pdf_path}"
     name = hashlib.sha1(stamp.encode("utf-8")).hexdigest()[:16]
     return os.path.join(CACHE, f"{name}.pdf")
 
