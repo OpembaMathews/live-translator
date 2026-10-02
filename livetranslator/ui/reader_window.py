@@ -413,6 +413,15 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.fit_button.setToolTip("Show a whole page at once, or fill the width")
         self.fit_button.clicked.connect(self.switch_fit)
         row.addWidget(self.fit_button)
+        # Only shown for a paper with no text in it, which is where the
+        # offer makes sense and nowhere else.
+        self.recognise_button = QPushButton("Read it anyway")
+        self.recognise_button.setToolTip(
+            "Read the words off the pages, for a scan or a paper whose text "
+            "was turned into shapes")
+        self.recognise_button.clicked.connect(self.recognise_pages)
+        self.recognise_button.hide()
+        row.addWidget(self.recognise_button)
         self.open_button = QPushButton("Open a PDF")
         self.open_button.clicked.connect(self.choose_file)
         row.addWidget(self.open_button)
@@ -587,6 +596,22 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
 
         ask(None, self)
 
+    def recognise_pages(self):
+        """Read the words off the pages, then open the readable copy."""
+        from .recognise_dialog import offer
+
+        if not self.path or self.doc is None:
+            return
+        readable = offer(self.path, self.doc.page_count, self)
+        if readable:
+            original = self.path
+            self.open(readable)
+            # The file card should name the paper, not the working copy.
+            self.filename.setText(os.path.basename(original))
+            self.path = original
+            self.status.setText(
+                "Read off the pages. Some words may be wrong.")
+
     def choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open a paper", "", "PDF files (*.pdf)")
@@ -609,6 +634,11 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         # loading: the page is there, the controls are dead, and the app
         # says "about 0 min to read" as though that were an answer.
         trouble = document.why_nothing_to_read(self.doc) if not self.items else ""
+        # Offered only when the words are on the page but not as text:
+        # recognition cannot help a paper whose text the rules simply did
+        # not pick out.
+        self.recognise_button.setVisible(
+            bool(trouble) and document.text_in(self.doc) == 0)
         if trouble:
             self.meta.setText(
                 f"{chrome.readable_size(path)}  ·  "
