@@ -121,12 +121,28 @@ AFTER_DIGIT = re.compile(r"(\d)([A-Z][a-z])")
 
 
 WORD = re.compile(r"[A-Za-z]+")
-# Short words the recogniser most often swallows into a neighbour. They are
-# listed because a two-letter half is otherwise too weak a signal to split
-# on, and these are the ones that actually happen.
-GLUE = {"of", "the", "and", "to", "for", "in", "on", "at", "as", "by",
-        "is", "are", "was", "were", "be", "with", "that", "from", "this",
-        "it", "its", "an", "a", "or", "but", "not", "can", "has", "have"}
+# The commonest English words, which a paper may never happen to use on
+# their own even though its sentences are full of them. "say" does not
+# appear alone anywhere in a paper about the digital divide, so without
+# this "Asmyfatherusedtosay" cannot be taken apart.
+GLUE = set("""
+a an the this that these those and or but not nor so yet for of in on at to
+from by with without within into onto over under above below between among
+through during before after since until while is are was were be been being
+am do does did doing have has had having can could will would shall should
+may might must as if then than when where why how what which who whom whose
+all any both each few more most other some such no only own same too very
+one two three four five six seven eight nine ten first second next last
+i me my we us our you your he him his she her it its they them their
+there here out up down off again once about against because though although
+said say says tell told take takes took make makes made go goes going went
+come comes came get gets got give gives gave know knows knew think thinks
+see sees saw want wants need needs use uses used work works worked
+people person man woman child children family father mother sister brother
+day time year week month home school life world part way thing things
+good new old long great little big small high low right left early late
+also just even still back well much many lite now today
+""".split())
 
 
 def vocabulary(texts):
@@ -148,31 +164,75 @@ def vocabulary(texts):
 def _decompose(low, known, depth):
     """Every piece a word the document uses, or None if it will not divide.
 
-    Recursive rather than one cut and then a look at the tail: in
-    "thankstowidespread" the middle piece is "to", so a single cut leaves
-    "towidespread", which is not a word and would have ended the attempt.
+    Worked out from the end backwards and remembered, because whole
+    sentences come back with every space missing -- "Asmyfatherusedtosay"
+    is six words, and trying each cut independently would take longer than
+    the recognition did.
     """
-    if low in known or low in GLUE:
-        return [low]
-    if depth <= 0 or len(low) < 4:
-        return None
-    best = None
-    for at in range(2, len(low) - 1):
-        left = low[:at]
-        if not (left in known or left in GLUE):
+    length = len(low)
+    # best[at] is the decomposition of low[at:], or None
+    best = [None] * (length + 1)
+    best[length] = []
+    for at in range(length - 1, -1, -1):
+        whole = low[at:]
+        if used_whole(whole, known) or whole in GLUE:
+            best[at] = [whole]
             continue
-        tail = _decompose(low[at:], known, depth - 1)
-        if tail is None:
-            continue
-        # The evenest decomposition: short fragments are the ones most
-        # likely to have matched by accident.
-        score = min(len(left), min(len(piece) for piece in tail))
-        if best is None or score > best[0]:
-            best = (score, [left] + tail)
-    return best[1] if best else None
+        choice = None
+        for cut in range(at + 2, length + 1):
+            piece = low[at:cut]
+            if not (used_whole(piece, known) or piece in GLUE):
+                continue
+            # A very short piece has to be a word in its own right, not a
+            # fragment the paper happens to contain once. "performed"
+            # became "per form ed" and "conditions in" became "condition
+            # sin" because "ed" and "sin" were technically present.
+            if len(piece) <= 3 and piece not in GLUE and known.get(piece, 0) < 3:
+                continue
+            rest = best[cut]
+            if rest is None:
+                continue
+            if len(rest) + 1 > depth:
+                continue
+            # Fewest pieces first, then the evenest. Preferring evenness
+            # alone turned "used" into "us ed" and "performed" into
+            # "per form ed": both are even, and both are wrong.
+            # Fewest pieces, then the ones the paper actually uses most.
+            # Counting commonness breaks the ties that length alone cannot:
+            # "conditions in" and "condition sin" are both two pieces of the
+            # same lengths, and only one of them is English.
+            shortest = min([len(piece)] + [len(r) for r in rest])
+            common = min([known.get(piece, 0)]
+                         + [known.get(r, 0) for r in rest])
+            score = (-(len(rest) + 1), common, shortest)
+            if choice is None or score > choice[0]:
+                choice = (score, [piece] + rest)
+        best[at] = choice[1] if choice else None
+    return best[0]
 
 
-def split_word(word, known, depth=3):
+# Past this, a run of letters is almost certainly several words. The
+# longest words in an academic paper -- "interculturality",
+# "epistemologies" -- sit just under it.
+LONGEST_REAL_WORD = 17
+
+
+def used_whole(low, known):
+    """Whether the document really uses this as a word.
+
+    The vocabulary is built from the recogniser's own output, so it contains
+    the recogniser's own mistakes: "asmyfatherusedtosay" appears in it once,
+    and a word that counts as known is never taken apart. A long run seen
+    only once is treated as the mistake it almost certainly is.
+    """
+    if low not in known:
+        return False
+    if len(low) <= LONGEST_REAL_WORD:
+        return True
+    return known[low] >= 2
+
+
+def split_word(word, known, depth=12):
     """One run-together word as its parts, or None to leave it alone.
 
     Only words the document never uses whole are touched, and only where
@@ -180,7 +240,7 @@ def split_word(word, known, depth=3):
     rather than fixing them.
     """
     low = word.lower()
-    if len(low) < 6 or low in known:
+    if len(low) < 5 or used_whole(low, known):
         return None
     pieces = _decompose(low, known, depth)
     if pieces is None or len(pieces) < 2:
@@ -191,6 +251,22 @@ def split_word(word, known, depth=3):
         out.append(word[at:at + len(piece)])
         at += len(piece)
     return out
+
+
+# Two short words run together where no English word can be the result.
+# These are the recogniser's habits rather than a document's vocabulary,
+# and they appear often enough to be in it, which is why frequency cannot
+# be used to spot them.
+ALWAYS = {
+    "ofthe": "of the", "inthe": "in the", "andthe": "and the",
+    "tothe": "to the", "forthe": "for the", "onthe": "on the",
+    "atthe": "at the", "isthe": "is the", "asthe": "as the",
+    "bythe": "by the", "thatthe": "that the", "withthe": "with the",
+    "fromthe": "from the", "ofa": "of a", "ina": "in a", "toa": "to a",
+    "ofthis": "of this", "inthis": "in this", "ofour": "of our",
+    "andin": "and in", "andto": "and to", "andof": "and of",
+    "ofan": "of an", "isa": "is a", "wasa": "was a", "area": "are a",
+}
 
 
 def space_out(text, known=None):
@@ -209,8 +285,13 @@ def space_out(text, known=None):
         return text
 
     def mend(match):
-        parts = split_word(match.group(0), known)
-        return " ".join(parts) if parts else match.group(0)
+        word = match.group(0)
+        fixed = ALWAYS.get(word.lower())
+        if fixed:
+            # keep the original capital, if there was one
+            return fixed.capitalize() if word[0].isupper() else fixed
+        parts = split_word(word, known)
+        return " ".join(parts) if parts else word
 
     return WORD.sub(mend, text)
 

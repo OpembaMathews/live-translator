@@ -108,3 +108,68 @@ def test_editing_a_paper_invalidates_its_recognised_copy(tmp_path):
 
 def test_it_says_when_the_recogniser_is_not_installed():
     assert isinstance(ocr.available(), bool)
+
+
+# --- choosing between decompositions that are all "valid" -----------------
+def test_fewest_pieces_wins(known):
+    """"used" is one word. Preferring the evenest split made it "us ed",
+    because that is even and both halves can be found somewhere."""
+    vocab = ocr.vocabulary(PAPER + ["as my father used to say", "us", "ed ed ed"])
+    assert ocr.split_word("fatherused", vocab) == ["father", "used"]
+
+
+def test_a_rare_short_fragment_is_refused(known):
+    """"conditions in" and "condition sin" are both two pieces of the same
+    lengths. Only one of them is English, and it is the common one."""
+    vocab = ocr.vocabulary(
+        ["conditions in vulnerable communities"] * 4 + ["the sin"])
+    assert ocr.space_out("conditionsin", vocab) == "conditions in"
+
+
+def test_a_word_is_left_joined_rather_than_split_wrongly():
+    """When no decomposition is trustworthy, the word stays as it is. A
+    nonsense word read aloud is bad; the wrong words read aloud is worse."""
+    vocab = ocr.vocabulary(["each participant per form ed the task"] )
+    # "performed" is not in this document at all
+    assert ocr.split_word("participantperformed", vocab) is None
+
+
+def test_the_recognisers_habitual_joins_are_always_split():
+    """"ofthe" appears so often that it looks like a word to any count of
+    its own, so frequency cannot spot it."""
+    vocab = ocr.vocabulary(["ofthe"] * 30)
+    assert ocr.space_out("ofthe", vocab) == "of the"
+    assert ocr.space_out("Ofthe", vocab) == "Of the"
+
+
+def test_a_long_run_seen_once_is_not_trusted_as_a_word():
+    """The vocabulary is built from the recogniser's own output, so it
+    contains the recogniser's own mistakes."""
+    vocab = ocr.vocabulary(
+        ["as my father used to say", "Asmyfatherusedtosay"])
+    assert ocr.split_word("Asmyfatherusedtosay", vocab) == \
+        ["As", "my", "father", "used", "to", "say"]
+
+
+def test_a_long_word_the_paper_really_uses_is_kept():
+    vocab = ocr.vocabulary(["interculturality matters"] * 3)
+    assert ocr.space_out("interculturality", vocab) == "interculturality"
+
+
+def test_the_common_words_cover_what_a_paper_may_never_use_alone():
+    """"say" does not appear on its own in a paper about the digital
+    divide, and without it "usedtosay" cannot be taken apart."""
+    for word in ("say", "one", "take", "off", "because", "going", "sister"):
+        assert word in ocr.GLUE, f"{word} is missing from the common words"
+
+
+def test_splitting_a_whole_page_is_quick():
+    """It runs over every line of every page, so it cannot be slow."""
+    import time
+
+    vocab = ocr.vocabulary(PAPER * 20)
+    lines = ["thecommunity ofeducation socioculturalfactors " * 6] * 60
+    start = time.perf_counter()
+    for line in lines:
+        ocr.space_out(line, vocab)
+    assert time.perf_counter() - start < 2.0
