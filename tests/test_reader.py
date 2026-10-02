@@ -460,3 +460,80 @@ def test_the_button_switches_to_a_whole_page(tmp_path):
         "the page is taller than the view, so it cannot be seen whole"
     assert window.view.width() <= window.scroll.viewport().width() + 1
     window.close()
+
+
+# --- a paper with nothing in it to read -----------------------------------
+def a_pdf_without_text(tmp_path, as_scan=False):
+    """A page that looks right and holds no text.
+
+    Either the words are drawn as shapes, which is what "print to PDF" does
+    to a document whose fonts will not embed, or the page is a photograph.
+    """
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    if as_scan:
+        pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 600, 800))
+        pix.set_rect(pix.irect, (255, 255, 255))
+        page.insert_image(page.rect, pixmap=pix)
+    else:
+        # letters as filled paths: visible, and not text
+        for n in range(30):
+            page.draw_rect(pymupdf.Rect(40 + n * 12, 100, 48 + n * 12, 118),
+                           fill=(0, 0, 0))
+    path = str(tmp_path / ("scan.pdf" if as_scan else "outlines.pdf"))
+    doc.save(path)
+    return pymupdf.open(path)
+
+
+def test_a_paper_whose_words_are_shapes_is_explained(tmp_path):
+    """It renders perfectly and yields nothing, which looks like a hang."""
+    doc = a_pdf_without_text(tmp_path)
+    assert document.text_in(doc) == 0
+    said = document.why_nothing_to_read(doc)
+    assert "drawn as shapes" in said
+    assert "print to PDF" in said
+    assert "exported from the original" in said, "say what to do about it"
+
+
+def test_a_scan_is_named_as_a_scan(tmp_path):
+    doc = a_pdf_without_text(tmp_path, as_scan=True)
+    assert document.text_in(doc) == 0
+    said = document.why_nothing_to_read(doc)
+    assert "scan" in said and "text recognition" in said
+
+
+def test_a_paper_with_text_is_not_accused_of_having_none(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((50, 100), "There are words here.", fontsize=11)
+    path = str(tmp_path / "words.pdf")
+    doc.save(path)
+    doc = pymupdf.open(path)
+    assert document.text_in(doc) > 0
+    said = document.why_nothing_to_read(doc)
+    assert "no text" not in said and "scan" not in said
+
+
+def test_the_reader_says_why_rather_than_showing_a_dead_button(tmp_path):
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import ReaderWindow
+
+    doc = a_pdf_without_text(tmp_path)
+    path = doc.name
+    doc.close()
+
+    window = ReaderWindow(voice_factory=lambda: None)
+    window.open(path)
+    assert not window.play_button.isEnabled(), "there is genuinely nothing to play"
+    assert "nothing to read aloud" in window.meta.text()
+    assert "drawn as shapes" in window.status.text(), \
+        "a disabled button with no explanation is the bug"
+    assert "0 min to read" not in window.meta.text(), \
+        "that reads as an answer when it is not one"
+    window.close()

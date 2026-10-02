@@ -251,6 +251,40 @@ def read_lines(doc):
     return [r for r in plan(doc) if r.action == READ]
 
 
+def text_in(doc, pages=6):
+    """How many characters of real text the file holds, at the front.
+
+    A PDF can look perfect and contain no text at all. Two ways that
+    happens: it is a scan, so every page is one big picture; or the text was
+    turned into outlines, so every letter is a filled shape and the file
+    draws thousands of them per page. "Microsoft: Print To PDF" does the
+    second, and the result reads beautifully and says nothing.
+
+    Either way there is nothing to read aloud, and the reader has to say so
+    rather than sit with a dead play button.
+    """
+    return sum(len(doc[n].get_text().strip())
+               for n in range(min(pages, doc.page_count)))
+
+
+def why_nothing_to_read(doc, pages=6):
+    """A sentence explaining an empty reading plan, or "" if that is a lie."""
+    if text_in(doc, pages) > 0:
+        return ("Nothing in this paper was picked out as body text to read. "
+                "It may be laid out in a way the reader does not recognise.")
+    looks_scanned = any(doc[n].get_images() and not doc[n].get_drawings()
+                        for n in range(min(pages, doc.page_count)))
+    if looks_scanned:
+        return ("This PDF is a scan: the pages are pictures, with no text in "
+                "them. Nothing can be read aloud until it has been through "
+                "text recognition.")
+    return ("This PDF has no text in it — the words are drawn as shapes "
+            "rather than stored as letters, which is what \"print to PDF\" "
+            "often produces. Nothing can be read aloud. A copy exported from "
+            "the original document, or downloaded from the publisher, will "
+            "usually work.")
+
+
 def draw(doc, rows, page_number, out_png, dpi=110):
     """Mark the plan onto a copy of one page: green read, grey skipped, red stop.
 

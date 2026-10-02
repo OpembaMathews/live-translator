@@ -605,9 +605,20 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         words = sum(len(i.text.split()) for i in self.items)
         self.path = path
         self.filename.setText(os.path.basename(path))
-        self.meta.setText(
-            f"{chrome.readable_size(path)}  ·  {self.doc.page_count} pages"
-            f"  ·  about {words / 150:.0f} min to read")
+        # A paper with nothing to read looks identical to one that is
+        # loading: the page is there, the controls are dead, and the app
+        # says "about 0 min to read" as though that were an answer.
+        trouble = document.why_nothing_to_read(self.doc) if not self.items else ""
+        if trouble:
+            self.meta.setText(
+                f"{chrome.readable_size(path)}  ·  "
+                f"{self.doc.page_count} pages  ·  nothing to read aloud")
+            log(f"reader: nothing to read in {os.path.basename(path)}: "
+                f"{trouble}")
+        else:
+            self.meta.setText(
+                f"{chrome.readable_size(path)}  ·  {self.doc.page_count} pages"
+                f"  ·  about {words / 150:.0f} min to read")
         self.progress.setRange(0, max(0, len(self.items) - 1))
         self.progress.setValue(0)
         self.progress.setEnabled(bool(self.items))
@@ -617,6 +628,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             button.setEnabled(bool(self.items))
         self._start_at = 0
         self.report()
+        if trouble:
+            self.status.setText(trouble)
         self.setWindowTitle(f"Read: {os.path.basename(path)}")
         log(f"reader: opened {path} ({words} words)")
 
@@ -798,8 +811,13 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.show_playing(False)
 
     def report(self):
-        """Where the reading is, and how much of the paper is left."""
+        """Where the reading is, and how much of the paper is left.
+
+        With nothing to read there is no position to report, and saying
+        "sentence 1 of 0" would overwrite the explanation of why.
+        """
         if not self.items:
+            self.right_label.setText("")
             return
         index = self.current_index()
         left = sum(len(i.text.split()) for i in self.items[index:])
