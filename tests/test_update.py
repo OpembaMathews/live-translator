@@ -249,7 +249,10 @@ def test_an_unreachable_server_is_survived_at_startup(monkeypatch):
     from livetranslator.ui import update_dialog
 
     monkeypatch.setattr(update_dialog.update, "look", lambda *a, **k: None)
+    # Both, because these are module globals and a test that leaves one set
+    # makes the next one pass or fail depending on the order they ran in.
     update_dialog._looking = None
+    update_dialog._found = None
     update_dialog.look_quietly()
     for _ in range(200):
         QCoreApplication.processEvents()

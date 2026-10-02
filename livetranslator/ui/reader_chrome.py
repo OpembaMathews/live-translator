@@ -35,6 +35,17 @@ QFrame#card {
     background-color: #12212F; border: 1px solid #1E2C3C; border-radius: 14px;
 }
 QFrame#paper { background-color: #F7F9FC; border-radius: 14px; }
+/* The band that explains why a paper cannot be read. Warm rather than red:
+   it is something to know, not something that went wrong. */
+QFrame#notice {
+    background-color: #2A2318; border: 1px solid #4A3A1E; border-radius: 12px;
+}
+QLabel#noticetext { color: #E3C892; font-size: 9.5pt; }
+QPushButton#act {
+    background-color: #C8862F; color: #1B1206; font-weight: 600;
+    border-radius: 9px; padding: 8px 16px;
+}
+QPushButton#act:hover { background-color: #DD9A3E; }
 QScrollArea { border: none; background: transparent; }
 QScrollBar:vertical { background: transparent; width: 10px; margin: 4px; }
 QScrollBar::handle:vertical { background: #2A3E52; border-radius: 5px; min-height: 30px; }

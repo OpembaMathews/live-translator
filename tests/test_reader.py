@@ -532,8 +532,61 @@ def test_the_reader_says_why_rather_than_showing_a_dead_button(tmp_path):
     window.open(path)
     assert not window.play_button.isEnabled(), "there is genuinely nothing to play"
     assert "nothing to read aloud" in window.meta.text()
-    assert "drawn as shapes" in window.status.text(), \
-        "a disabled button with no explanation is the bug"
     assert "0 min to read" not in window.meta.text(), \
         "that reads as an answer when it is not one"
+    # The explanation has a band of its own now. On the status line it ran
+    # into the progress slider and was cut off mid-word.
+    assert "drawn as shapes" in window.notice_text.text(), \
+        "a disabled button with no explanation is the bug"
+    assert "drawn as shapes" not in window.status.text(), \
+        "the status line is sized for 'sentence 141 of 329', not a paragraph"
+    assert not window.recognise_button.isHidden(), \
+        "the offer should be beside the explanation, not hidden in a corner"
+    window.close()
+
+
+def test_the_offer_is_only_made_where_it_could_help(tmp_path):
+    """Recognition reads words off a page. It cannot help a paper whose
+    text is there and simply was not picked out."""
+    import pymupdf
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import ReaderWindow
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((50, 100), "Text that is present.", fontsize=11)
+    path = str(tmp_path / "has-text.pdf")
+    doc.save(path)
+
+    window = ReaderWindow(voice_factory=lambda: None)
+    window.open(path)
+    assert window.recognise_button.isHidden(), \
+        "offering to recognise a paper that already has text is nonsense"
+    window.close()
+
+
+def test_the_band_goes_away_for_an_ordinary_paper(tmp_path):
+    import pymupdf
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from livetranslator.ui.reader_window import ReaderWindow
+
+    doc = pymupdf.open()
+    for _ in range(2):
+        page = doc.new_page()
+        page.insert_textbox(pymupdf.Rect(50, 80, 520, 700),
+                            "A paragraph of ordinary body text. " * 20,
+                            fontsize=10)
+    path = str(tmp_path / "normal.pdf")
+    doc.save(path)
+
+    window = ReaderWindow(voice_factory=lambda: None)
+    window.open(path)
+    assert window.items, "this paper should be readable"
+    assert window.notice.isHidden(), "nothing to explain"
     window.close()

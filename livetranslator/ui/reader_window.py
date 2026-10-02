@@ -309,6 +309,7 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         outer.setSpacing(8)
         outer.addLayout(self.build_header())
         outer.addWidget(self.build_file_card())
+        outer.addWidget(self.build_notice())
         outer.addWidget(self.build_pages(), 1)
         outer.addLayout(self.build_transport())
         self.setCentralWidget(panel)
@@ -413,19 +414,42 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         self.fit_button.setToolTip("Show a whole page at once, or fill the width")
         self.fit_button.clicked.connect(self.switch_fit)
         row.addWidget(self.fit_button)
-        # Only shown for a paper with no text in it, which is where the
-        # offer makes sense and nowhere else.
-        self.recognise_button = QPushButton("Read it anyway")
-        self.recognise_button.setToolTip(
-            "Read the words off the pages, for a scan or a paper whose text "
-            "was turned into shapes")
-        self.recognise_button.clicked.connect(self.recognise_pages)
-        self.recognise_button.hide()
-        row.addWidget(self.recognise_button)
         self.open_button = QPushButton("Open a PDF")
         self.open_button.clicked.connect(self.choose_file)
         row.addWidget(self.open_button)
         return frame
+
+    def build_notice(self):
+        """A band for the one thing the reader sometimes has to explain.
+
+        It used to go on the status line beside the progress bar, which is
+        sized for "sentence 141 of 329". A paragraph there overflowed into
+        the slider and was cut off mid-word.
+        """
+        frame = self.notice = chrome.card()
+        frame.setObjectName("notice")
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(14, 11, 14, 11)
+        row.setSpacing(12)
+        self.notice_text = QLabel("")
+        self.notice_text.setObjectName("noticetext")
+        self.notice_text.setWordWrap(True)
+        row.addWidget(self.notice_text, 1)
+        self.recognise_button = QPushButton("Read it anyway")
+        self.recognise_button.setObjectName("act")
+        self.recognise_button.setToolTip(
+            "Read the words off the pages, for a scan or a paper whose text "
+            "was turned into shapes")
+        self.recognise_button.clicked.connect(self.recognise_pages)
+        row.addWidget(self.recognise_button)
+        frame.hide()
+        return frame
+
+    def say_notice(self, text, offer=False):
+        """Show the band, or put it away when there is nothing to say."""
+        self.notice_text.setText(text)
+        self.recognise_button.setVisible(offer)
+        self.notice.setVisible(bool(text))
 
     def build_pages(self):
         frame = self.paper = QFrame()
@@ -609,8 +633,8 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             # The file card should name the paper, not the working copy.
             self.filename.setText(os.path.basename(original))
             self.path = original
-            self.status.setText(
-                "Read off the pages. Some words may be wrong.")
+            self.say_notice("Read off the pages, so some words may be wrong. "
+                            "The paper itself is unchanged.")
 
     def choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -637,8 +661,11 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
         # Offered only when the words are on the page but not as text:
         # recognition cannot help a paper whose text the rules simply did
         # not pick out.
-        self.recognise_button.setVisible(
-            bool(trouble) and document.text_in(self.doc) == 0)
+        # Recognition can only help a paper whose words are on the page
+        # but not as text; it cannot help one the rules simply did not pick
+        # out.
+        self.say_notice(trouble, offer=bool(trouble)
+                        and document.text_in(self.doc) == 0)
         if trouble:
             self.meta.setText(
                 f"{chrome.readable_size(path)}  ·  "
@@ -658,8 +685,6 @@ class ReaderWindow(QMainWindow, chrome.Draggable):
             button.setEnabled(bool(self.items))
         self._start_at = 0
         self.report()
-        if trouble:
-            self.status.setText(trouble)
         self.setWindowTitle(f"Read: {os.path.basename(path)}")
         log(f"reader: opened {path} ({words} words)")
 
