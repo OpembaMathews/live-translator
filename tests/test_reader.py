@@ -306,7 +306,11 @@ def test_an_email_address_is_named_not_spelled():
 
 
 def test_ordinary_text_with_a_full_stop_is_untouched():
-    text = "The result was 10.5 percent. That was the finding."
+    """The stop that ends a sentence stays as it is. The one inside 10.5
+    does not: this test used to assert that it did, which was written
+    before anybody listened to what espeak does with a decimal in the
+    middle of a long sentence."""
+    text = "The result was 10 percent. That was the finding."
     assert speakable.speakable(text) == text
 
 
@@ -590,3 +594,97 @@ def test_the_band_goes_away_for_an_ordinary_paper(tmp_path):
     assert window.items, "this paper should be readable"
     assert window.notice.isHidden(), "nothing to explain"
     window.close()
+
+
+# --- numbers said aloud ---------------------------------------------------
+def test_a_decimal_point_is_spoken_as_a_point():
+    """Inside a long sentence, espeak reads "92.5%" as "ninety two" then a
+    full stop then "five percent", which is heard as a stumble and a wrong
+    number. On its own it reads the same figure correctly, so this only
+    shows up in real prose."""
+    said = speakable.speakable("as 92.5% of the population reported one")
+    assert "92 point 5%" in said
+
+
+def test_every_decimal_in_a_sentence_is_covered():
+    said = speakable.speakable("Between 55.3% and 56.4%, against 1.3% before.")
+    assert "55 point 3" in said and "56 point 4" in said and "1 point 3" in said
+
+
+def test_a_full_stop_that_ends_a_sentence_is_left_alone():
+    """Only a stop between two digits is a decimal point."""
+    said = speakable.speakable("The result was 10 percent. That was the finding.")
+    assert said == "The result was 10 percent. That was the finding."
+    assert "point" not in said
+
+
+def test_a_thousands_separator_is_not_touched():
+    said = speakable.speakable("It cost 1,250.75 in total.")
+    assert "1,250 point 75" in said
+
+
+def test_a_section_number_reads_as_its_parts():
+    """"2.1" is two and one, not a sentence ending after the two."""
+    assert "2 point 1" in speakable.speakable("See section 2.1 for details.")
+
+
+# --- footnotes ------------------------------------------------------------
+def a_page_with_a_rule(tmp_path, at_fraction, width_fraction, name):
+    """A page of body text with a horizontal rule and a note beneath it."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    width, height = page.rect.width, page.rect.height
+    page.insert_textbox(pymupdf.Rect(60, 70, width - 60, height * 0.6),
+                        "Body text that should always be read. " * 18,
+                        fontsize=10)
+    y = height * at_fraction
+    page.draw_line(pymupdf.Point(70, y),
+                   pymupdf.Point(70 + width * width_fraction, y), width=0.6)
+    page.insert_textbox(pymupdf.Rect(60, y + 6, width - 60, height - 40),
+                        "A note set below the rule at the foot of the page.",
+                        fontsize=10)
+    path = str(tmp_path / name)
+    doc.save(path)
+    return document.open_document(path)
+
+
+def test_text_below_a_footnote_rule_is_not_read(tmp_path):
+    """Recognition gives every line of a page the same apparent size, so
+    "this text is smaller" stops telling a footnote from a paragraph. The
+    rule at the foot of the page is the signal that survives."""
+    doc = a_page_with_a_rule(tmp_path, 0.80, 0.12, "footnote.pdf")
+    plan = document.plan(doc)
+    notes = [p for p in plan if "footnote" in p.reason]
+    assert notes, "the note under the rule should not be read"
+    read = " ".join(p.text for p in plan if p.action == document.READ)
+    assert "should always be read" in read, "the body text must survive"
+    assert "set below the rule" not in read
+
+
+def test_a_rule_high_on_the_page_is_not_a_footnote_rule(tmp_path):
+    """One above an abstract cost a paper its abstract."""
+    doc = a_page_with_a_rule(tmp_path, 0.62, 0.12, "midpage.pdf")
+    plan = document.plan(doc)
+    assert not [p for p in plan if "footnote, below" in p.reason]
+
+
+def test_a_wide_rule_is_a_divider_rather_than_a_footnote_rule(tmp_path):
+    doc = a_page_with_a_rule(tmp_path, 0.80, 0.45, "wide.pdf")
+    plan = document.plan(doc)
+    assert not [p for p in plan if "footnote, below" in p.reason]
+
+
+def test_a_page_with_no_rule_loses_nothing(tmp_path):
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_textbox(pymupdf.Rect(60, 70, 520, 760),
+                        "Ordinary body text throughout the page. " * 30,
+                        fontsize=10)
+    path = str(tmp_path / "plain.pdf")
+    doc.save(path)
+    doc = document.open_document(path)
+    assert document.footnote_line(doc[0]) is None

@@ -57,6 +57,14 @@ def replace_link(pattern, say, text):
     return pattern.sub(swap, text)
 
 
+# A full stop between two digits is a decimal point, never the end of a
+# sentence. Said aloud inside a long sentence, espeak reads "92.5%" as
+# "ninety two" then a full stop then "five percent", which is heard as
+# "ninety two percent" with a stumble in the middle. On its own it reads
+# the same number correctly, so this only shows up in real prose.
+DECIMAL = re.compile(r"(?<=\d)\.(?=\d)")
+
+
 def speakable(text, known=None):
     known = known if known is not None else defined_abbreviations(text)
 
@@ -65,6 +73,11 @@ def speakable(text, known=None):
     text = replace_link(DOI_URL, "D-O-I", text)
     text = replace_link(WEB_LINK, "URL", text)
     text = replace_link(EMAIL, "an email address", text)
+
+    # After the links, never before: a DOI is full of full stops between
+    # digits ("10.2196/75019"), and rewriting those first left nothing the
+    # link rules could recognise.
+    text = DECIMAL.sub(" point ", text)
 
     # Currency ("AU $20") is deliberately left alone. Rewriting it as
     # "20 Australian dollars" broke the grammar of "a AU $20 gift voucher",

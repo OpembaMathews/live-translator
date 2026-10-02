@@ -42,6 +42,43 @@ REPEATS = 0.4           # ...on at least this share of the pages
 SMALL_PRINT_FRONT = 9
 SMALL_PRINT_BODY = 8
 
+# A footnote is set off by a short rule at the foot of the page: thin, a
+# fraction of the text width, at the left margin. It is how typesetting has
+# marked footnotes for centuries, and it is the only signal left once a page
+# has been through recognition -- that gives every line the same apparent
+# size, so "this text is smaller" no longer tells a footnote from the
+# paragraph above it.
+# Measured on four papers. The two rules that really did mark footnotes sat
+# 80% and 87% down the page and were 12% and 14% of its width. The two that
+# did not -- one above a paragraph, one above an abstract -- were at 58% and
+# 70%, and one of them was 38% wide. The thresholds separate those, and they
+# are fitted to four examples rather than derived from anything, so a paper
+# that breaks them is a reason to look again rather than a surprise.
+RULE_THICKNESS = 3.0        # points; thicker is a box or a table
+RULE_SHARE = (0.06, 0.30)   # of the page width; wider is a divider
+RULE_DEPTH = 0.74           # how far down the page it has to sit
+RULE_MARGIN = 0.20          # how far from the left edge it may start
+
+
+def footnote_line(page):
+    """The y below which this page is footnotes, or None if there is none."""
+    width, height = page.rect.width, page.rect.height
+    lowest = None
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return None
+    for drawing in drawings:
+        rect = drawing["rect"]
+        share = rect.width / width if width else 0
+        if (rect.height <= RULE_THICKNESS
+                and RULE_SHARE[0] <= share <= RULE_SHARE[1]
+                and rect.y0 > height * RULE_DEPTH
+                and rect.x0 < width * RULE_MARGIN):
+            lowest = rect.y1 if lowest is None else max(lowest, rect.y1)
+    return lowest
+
+
 READ, SKIP, STOP = "read", "skip", "stop"
 
 
@@ -159,6 +196,7 @@ def plan(doc):
     for pno in range(doc.page_count):
         page = doc[pno]
         height = page.rect.height
+        footnotes_below = footnote_line(page)
         blocks = [b for b in page.get_text("dict")["blocks"]
                   if b.get("type") == 0]
         sizes = [dominant_size(b) for b in blocks]
@@ -185,6 +223,9 @@ def plan(doc):
                 continue
             if y0 > height - FOOTER_BAND:
                 add(SKIP, "footer and page number")
+                continue
+            if footnotes_below is not None and y0 >= footnotes_below:
+                add(SKIP, "footnote, below the rule at the foot of the page")
                 continue
             if stopped:
                 add(SKIP, "after the end of the article body")
